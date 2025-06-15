@@ -12,7 +12,7 @@ const LOG_LEVELS = {
 class Logger {
   constructor(options = {}) {
     this.level = LOG_LEVELS[options.level?.toUpperCase()] ?? LOG_LEVELS.INFO
-    this.service = options.service || 'excel-report-service'
+    this.service = options.service || 'sf-reporting-excel-lambda'
     this.version = options.version || process.env.SERVICE_VERSION || '1.0.0'
   }
 
@@ -53,7 +53,7 @@ class Logger {
 
 const logger = new Logger({
   level: process.env.LOG_LEVEL || 'INFO',
-  service: 'excel-report-service'
+  service: 'sf-reporting-excel-lambda'
 })
 
 module.exports = {

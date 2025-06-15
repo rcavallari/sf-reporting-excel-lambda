@@ -1,0 +1,184 @@
+name: Cleanup and Maintenance
+
+on:
+  schedule:
+    # Run weekly on Sundays at 2 AM UTC
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      cleanup_type:
+        description: 'Type of cleanup to perform'
+        required: true
+        default: 'logs'
+        type: choice
+        options:
+          - 'logs'
+          - 'artifacts'
+          - 'dependencies'
+          - 'all'
+
+jobs:
+  cleanup-logs:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.cleanup_type == 'logs' || github.event.inputs.cleanup_type == 'all' || github.event_name == 'schedule'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22.x'
+        cache: 'yarn'
+    
+    - name: Install dependencies
+      run: yarn install --frozen-lockfile
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+    
+    - name: Cleanup CloudWatch logs (dev)
+      run: |
+        echo "Cleaning up CloudWatch logs older than 30 days for dev environment..."
+        
+        # Get all log groups for the service
+        LOG_GROUPS=$(aws logs describe-log-groups \
+          --log-group-name-prefix "/aws/lambda/excel-report-service-dev" \
+          --query 'logGroups[].logGroupName' \
+          --output text)
+        
+        # Set retention policy for each log group
+        for LOG_GROUP in $LOG_GROUPS; do
+          echo "Setting retention for $LOG_GROUP to 30 days"
+          aws logs put-retention-policy \
+            --log-group-name "$LOG_GROUP" \
+            --retention-in-days 30 || echo "Failed to set retention for $LOG_GROUP"
+        done
+
+  cleanup-artifacts:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.cleanup_type == 'artifacts' || github.event.inputs.cleanup_type == 'all' || github.event_name == 'schedule'
+    
+    steps:
+    - name: Cleanup old workflow artifacts
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const artifacts = await github.rest.actions.listArtifactsForRepo({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            per_page: 100
+          });
+          
+          const thirtyDaysAgo = new Date();
+          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+          
+          let deletedCount = 0;
+          
+          for (const artifact of artifacts.data.artifacts) {
+            const createdAt = new Date(artifact.created_at);
+            if (createdAt < thirtyDaysAgo) {
+              try {
+                await github.rest.actions.deleteArtifact({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  artifact_id: artifact.id
+                });
+                console.log(`Deleted artifact: ${artifact.name} (${artifact.created_at})`);
+                deletedCount++;
+              } catch (error) {
+                console.log(`Failed to delete artifact ${artifact.name}: ${error.message}`);
+              }
+            }
+          }
+          
+          console.log(`Deleted ${deletedCount} old artifacts`);
+
+  dependency-updates:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.cleanup_type == 'dependencies' || github.event.inputs.cleanup_type == 'all' || github.event_name == 'schedule'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22.x'
+        cache: 'yarn'
+    
+    - name: Check for dependency updates
+      run: |
+        yarn install --frozen-lockfile
+        
+        echo "Checking for outdated dependencies..."
+        yarn outdated || true
+        
+        echo "Checking for security vulnerabilities..."
+        yarn audit --level moderate || true
+    
+    - name: Create dependency update issue
+      if: github.event_name == 'schedule'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { execSync } = require('child_process');
+          
+          try {
+            const outdated = execSync('yarn outdated --json', { encoding: 'utf8' });
+            const audit = execSync('yarn audit --level moderate --json', { encoding: 'utf8' });
+            
+            const title = `🔧 Weekly Dependency Maintenance - ${new Date().toISOString().split('T')[0]}`;
+            const body = `
+          ## Dependency Maintenance Report
+          
+          This is an automated weekly report of dependency status.
+          
+          ### Outdated Dependencies
+          \`\`\`
+          ${outdated}
+          \`\`\`
+          
+          ### Security Audit
+          \`\`\`
+          ${audit}
+          \`\`\`
+          
+          ### Recommended Actions
+          - [ ] Review outdated dependencies and update if needed
+          - [ ] Address any security vulnerabilities
+          - [ ] Test changes in development environment
+          - [ ] Update CHANGELOG.md if significant updates are made
+          
+          *This issue was automatically created by the cleanup workflow.*
+            `;
+            
+            // Check if a similar issue already exists
+            const existingIssues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'maintenance,dependencies',
+              state: 'open'
+            });
+            
+            if (existingIssues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['maintenance', 'dependencies']
+              });
+              console.log('Created dependency maintenance issue');
+            } else {
+              console.log('Dependency maintenance issue already exists');
+            }
+          } catch (error) {
+            console.log('No significant dependency issues found');
+          }

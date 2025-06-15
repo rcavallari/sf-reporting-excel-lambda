@@ -20,7 +20,7 @@ The service provides **two entry points**:
 ### Installation
 
 ```bash
-cd excel-report-service
+cd sf-reporting-excel-lambda
 yarn install
 ```
 

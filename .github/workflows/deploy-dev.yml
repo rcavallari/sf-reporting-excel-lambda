@@ -1,0 +1,97 @@
+name: Deploy to Development
+
+on:
+  push:
+    branches: [ develop ]
+  workflow_dispatch:
+    inputs:
+      force_deploy:
+        description: 'Force deployment even if tests fail'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.force_deploy != 'true'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22.x'
+        cache: 'yarn'
+    
+    - name: Install dependencies
+      run: yarn install --frozen-lockfile
+    
+    - name: Run tests
+      run: yarn test
+      env:
+        NODE_ENV: test
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: always() && (needs.test.result == 'success' || github.event.inputs.force_deploy == 'true')
+    
+    environment:
+      name: development
+      url: ${{ steps.deploy.outputs.endpoint }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '22.x'
+        cache: 'yarn'
+    
+    - name: Install dependencies
+      run: yarn install --frozen-lockfile
+    
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+    
+    - name: Deploy to AWS Lambda
+      id: deploy
+      run: |
+        yarn deploy:dev
+        echo "endpoint=$(serverless info --stage dev --verbose | grep -o 'https://[^[:space:]]*')" >> $GITHUB_OUTPUT
+      env:
+        BUCKET: ${{ vars.DEV_BUCKET }}
+        IMAGES_BUCKET: ${{ vars.DEV_IMAGES_BUCKET }}
+        IMAGES_REGION: us-east-1
+        AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+    
+    - name: Run post-deployment tests
+      run: |
+        # Wait for Lambda to be ready
+        sleep 30
+        
+        # Test health check endpoint
+        ENDPOINT=$(serverless info --stage dev --verbose | grep -o 'https://[^[:space:]]*')
+        curl -f "${ENDPOINT}/health" || exit 1
+      env:
+        BUCKET: ${{ vars.DEV_BUCKET }}
+        IMAGES_BUCKET: ${{ vars.DEV_IMAGES_BUCKET }}
+    
+    - name: Notify deployment status
+      if: always()
+      run: |
+        if [ "${{ job.status }}" == "success" ]; then
+          echo "✅ Development deployment successful!"
+        else
+          echo "❌ Development deployment failed!"
+          exit 1
+        fi
