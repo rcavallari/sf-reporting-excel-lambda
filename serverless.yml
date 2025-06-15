@@ -1,22 +1,23 @@
-service: sf-reporting-excel-lambda
+service: report-excel-lambda
 
 frameworkVersion: '3'
 
 provider:
   name: aws
   runtime: nodejs22.x
-  stage: ${opt:stage, 'dev'}
-  region: ${opt:region, 'us-east-1'}
+  stage: ${opt:stage, 'prod'}
+  region: ${env:REGION, 'us-west-2'}
   memorySize: 1024
   timeout: 300
 
   environment:
-    NODE_ENV: ${self:provider.stage}
-    SERVICE_VERSION: ${self:service}-${self:provider.stage}-v1.0.0
-    LOG_LEVEL: ${self:custom.logLevel.${self:provider.stage}, 'INFO'}
+    NODE_ENV: ${env:NODE_ENV, 'production'}
+    SERVICE_VERSION: report-excel-lambda-v1.0.0
+    LOG_LEVEL: ${env:LOG_LEVEL, 'INFO'}
     BUCKET: ${env:BUCKET}
-    IMAGES_BUCKET: ${env:IMAGES_BUCKET, ''}
-    AWS_REGION: ${self:provider.region}
+    IMAGES_BUCKET: ${env:IMAGES_BUCKET}
+    IMAGES_REGION: ${env:IMAGES_REGION, 'us-east-1'}
+    REGION: ${env:REGION, 'us-west-2'}
 
   iam:
     role:
@@ -37,13 +38,9 @@ provider:
             - logs:PutLogEvents
           Resource: arn:aws:logs:${self:provider.region}:*:*
 
-custom:
-  logLevel:
-    dev: DEBUG
-    prod: INFO
-
 functions:
-  generateReport:
+  main:
+    name: report-excel-lambda
     handler: src/handlers/lambda-handler.handler
     description: Generates Excel reports from S3 data
     events:
@@ -51,16 +48,11 @@ functions:
           path: /generate-report
           method: post
           cors: true
-    reservedConcurrency: 5
-
-  healthCheck:
-    handler: src/handlers/lambda-handler.healthCheck
-    description: Health check endpoint
-    events:
       - http:
           path: /health
           method: get
           cors: true
+    reservedConcurrency: 5
 
 plugins:
   - serverless-offline

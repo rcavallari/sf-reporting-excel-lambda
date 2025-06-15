@@ -1,14 +1,14 @@
-name: Deploy to Development
+name: Deploy Lambda Function
 
 on:
   push:
-    branches: [ develop ]
+    branches: [ main, develop ]
   workflow_dispatch:
     inputs:
       force_deploy:
         description: 'Force deployment even if tests fail'
         required: false
-        default: 'false'
+        default: false
         type: boolean
 
 jobs:
@@ -40,7 +40,7 @@ jobs:
     if: always() && (needs.test.result == 'success' || github.event.inputs.force_deploy == 'true')
     
     environment:
-      name: development
+      name: production
       url: ${{ steps.deploy.outputs.endpoint }}
     
     steps:
@@ -59,39 +59,53 @@ jobs:
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+        aws-access-key-id: ${{ secrets.ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.SECRET_ACCESS_KEY }}
+        aws-region: ${{ vars.REGION || 'us-west-2' }}
     
     - name: Deploy to AWS Lambda
       id: deploy
       run: |
-        yarn deploy:dev
-        echo "endpoint=$(serverless info --stage dev --verbose | grep -o 'https://[^[:space:]]*')" >> $GITHUB_OUTPUT
+        yarn deploy
+        echo "endpoint=$(serverless info --verbose | grep -o 'https://[^[:space:]]*')" >> $GITHUB_OUTPUT
       env:
-        BUCKET: ${{ vars.DEV_BUCKET }}
-        IMAGES_BUCKET: ${{ vars.DEV_IMAGES_BUCKET }}
+        BUCKET: ${{ vars.BUCKET }}
+        IMAGES_BUCKET: ${{ vars.IMAGES_BUCKET }}
         IMAGES_REGION: us-east-1
-        AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+        REGION: ${{ vars.REGION || 'us-west-2' }}
+        NODE_ENV: production
+        LOG_LEVEL: INFO
     
-    - name: Run post-deployment tests
+    - name: Run post-deployment health check
       run: |
         # Wait for Lambda to be ready
         sleep 30
         
         # Test health check endpoint
-        ENDPOINT=$(serverless info --stage dev --verbose | grep -o 'https://[^[:space:]]*')
-        curl -f "${ENDPOINT}/health" || exit 1
-      env:
-        BUCKET: ${{ vars.DEV_BUCKET }}
-        IMAGES_BUCKET: ${{ vars.DEV_IMAGES_BUCKET }}
+        ENDPOINT=$(serverless info --verbose | grep -o 'https://[^[:space:]]*')
+        
+        # Retry health check up to 3 times
+        for i in {1..3}; do
+          if curl -f "${ENDPOINT}/health"; then
+            echo "Health check passed on attempt $i"
+            break
+          elif [ $i -eq 3 ]; then
+            echo "Health check failed after 3 attempts"
+            exit 1
+          else
+            echo "Health check failed on attempt $i, retrying in 15s..."
+            sleep 15
+          fi
+        done
     
     - name: Notify deployment status
       if: always()
       run: |
         if [ "${{ job.status }}" == "success" ]; then
-          echo "✅ Development deployment successful!"
+          echo "🚀 Lambda deployment successful!"
+          echo "Function: report-excel-lambda"
+          echo "Endpoint: ${{ steps.deploy.outputs.endpoint }}"
         else
-          echo "❌ Development deployment failed!"
+          echo "💥 Lambda deployment failed!"
           exit 1
         fi
