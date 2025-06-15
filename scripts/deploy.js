@@ -186,14 +186,14 @@ async function deployToLambda() {
 
     if (Object.keys(validEnvVars).length > 0) {
       const envString = JSON.stringify({ Variables: validEnvVars }).replace(/"/g, '\\"');
-      const updateConfigCommand = `aws lambda update-function-configuration --function-name ${LAMBDA_FUNCTION_NAME} --handler index.handler --timeout 1200 --memory-size 4096 --environment "${envString}" --region ${LAMBDA_REGION}`;
+      const updateConfigCommand = `aws lambda update-function-configuration --function-name ${LAMBDA_FUNCTION_NAME} --handler index.handler --timeout 900 --memory-size 4096 --environment "${envString}" --region ${LAMBDA_REGION}`;
       await execAsync(updateConfigCommand);
 
       // Wait for configuration update to complete
       await waitForFunctionUpdate(LAMBDA_FUNCTION_NAME, LAMBDA_REGION);
     } else {
       // Just update handler and performance settings if no environment variables
-      const updateConfigCommand = `aws lambda update-function-configuration --function-name ${LAMBDA_FUNCTION_NAME} --handler index.handler --timeout 1200 --memory-size 4096 --region ${LAMBDA_REGION}`;
+      const updateConfigCommand = `aws lambda update-function-configuration --function-name ${LAMBDA_FUNCTION_NAME} --handler index.handler --timeout 900 --memory-size 4096 --region ${LAMBDA_REGION}`;
       await execAsync(updateConfigCommand);
 
       await waitForFunctionUpdate(LAMBDA_FUNCTION_NAME, LAMBDA_REGION);
