@@ -711,11 +711,12 @@ class ExcelReportService {
         }
 
         // Generate Excel file
-        const filename = await this.generateExcelFile(products, users)
+        const filePath = await this.generateExcelFile(products, users)
+        const filename = path.basename(filePath)
 
         // Upload to S3
         const s3Key = `report/output/${this.config.idProject}/${filename}`
-        const signedUrl = await this.s3Service.uploadFileToS3(filename, s3Key)
+        const signedUrl = await this.s3Service.uploadFileToS3(filePath, s3Key)
 
         const endTime = new Date().getTime()
         const duration = (endTime - startTime) / 1000
@@ -759,8 +760,12 @@ class ExcelReportService {
     const date = this.config.getDate()
     const datasetType = this.config.isFinal ? 'final_data_set' : 'interim_data_set'
     const filename = `${this.config.idProject}-${datasetType}-${date}.xlsx`
+    
+    // Use /tmp directory in Lambda environment
+    const filePath = isLambda ? path.join('/tmp', filename) : filename
 
     console.log(`📝 Generating Excel file: ${filename}`)
+    console.log(`📂 File path: ${filePath}`)
 
     // Preprocess products
     products = this.preprocessProducts(products)
@@ -797,9 +802,9 @@ class ExcelReportService {
     }
 
     // Write file
-    await this.worksheetManager.writeFile(filename)
+    await this.worksheetManager.writeFile(filePath)
 
-    return filename
+    return filePath
   }
 
   preprocessProducts(products) {
