@@ -69,7 +69,7 @@ async function createDeploymentPackage() {
     console.log('📦 Installing production dependencies...');
     const originalCwd = process.cwd();
     process.chdir(distPath);
-    
+
     try {
       await execAsync('yarn install --production --frozen-lockfile');
       console.log('   ✓ Dependencies installed');
@@ -78,12 +78,12 @@ async function createDeploymentPackage() {
       await execAsync('npm install --production');
       console.log('   ✓ Dependencies installed with npm');
     }
-    
+
     process.chdir(originalCwd);
 
     // Create zip file (cross-platform approach)
     console.log('🗜️  Creating ZIP archive...');
-    
+
     // Try different zip approaches based on platform
     try {
       if (process.platform === 'win32') {
@@ -122,17 +122,17 @@ async function createDeploymentPackage() {
 async function waitForFunctionUpdate(functionName, region, maxWaitTime = 60000) {
   console.log('   ⏳ Waiting for function to be ready...');
   const startTime = Date.now();
-  
+
   while (Date.now() - startTime < maxWaitTime) {
     try {
       const { stdout } = await execAsync(`aws lambda get-function --function-name ${functionName} --region ${region}`);
       const functionInfo = JSON.parse(stdout);
-      
+
       if (functionInfo.Configuration.State === 'Active' && functionInfo.Configuration.LastUpdateStatus === 'Successful') {
         console.log('   ✅ Function is ready');
         return;
       }
-      
+
       console.log(`   ⏳ Function state: ${functionInfo.Configuration.State}, Status: ${functionInfo.Configuration.LastUpdateStatus}`);
       await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
     } catch (error) {
@@ -140,7 +140,7 @@ async function waitForFunctionUpdate(functionName, region, maxWaitTime = 60000) 
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
   }
-  
+
   throw new Error('Function did not become ready within the timeout period');
 }
 
@@ -148,7 +148,7 @@ async function deployToLambda() {
   try {
     console.log('🚀 Deploying to AWS Lambda...');
     const zipPath = path.join(process.cwd(), 'function.zip');
-    
+
     if (!fs.existsSync(zipPath)) {
       throw new Error('Deployment package (function.zip) not found!');
     }
@@ -163,10 +163,10 @@ async function deployToLambda() {
     console.log('   📦 Updating function code...');
     const updateCodeCommand = `aws lambda update-function-code --function-name ${LAMBDA_FUNCTION_NAME} --zip-file fileb://${zipPath} --region ${LAMBDA_REGION}`;
     const { stdout } = await execAsync(updateCodeCommand);
-    
+
     // Wait for code update to complete
     await waitForFunctionUpdate(LAMBDA_FUNCTION_NAME, LAMBDA_REGION);
-    
+
     // Update function configuration
     console.log('   🔧 Updating function configuration...');
     const envVars = {
@@ -186,21 +186,21 @@ async function deployToLambda() {
 
     if (Object.keys(validEnvVars).length > 0) {
       const envString = JSON.stringify({ Variables: validEnvVars }).replace(/"/g, '\\"');
-      const updateConfigCommand = `aws lambda update-function-configuration --function-name ${LAMBDA_FUNCTION_NAME} --handler index.handler --environment "${envString}" --region ${LAMBDA_REGION}`;
+      const updateConfigCommand = `aws lambda update-function-configuration --function-name ${LAMBDA_FUNCTION_NAME} --handler index.handler --timeout 1200 --memory-size 4096 --environment "${envString}" --region ${LAMBDA_REGION}`;
       await execAsync(updateConfigCommand);
-      
+
       // Wait for configuration update to complete
       await waitForFunctionUpdate(LAMBDA_FUNCTION_NAME, LAMBDA_REGION);
     } else {
-      // Just update handler if no environment variables
-      const updateConfigCommand = `aws lambda update-function-configuration --function-name ${LAMBDA_FUNCTION_NAME} --handler index.handler --region ${LAMBDA_REGION}`;
+      // Just update handler and performance settings if no environment variables
+      const updateConfigCommand = `aws lambda update-function-configuration --function-name ${LAMBDA_FUNCTION_NAME} --handler index.handler --timeout 1200 --memory-size 4096 --region ${LAMBDA_REGION}`;
       await execAsync(updateConfigCommand);
-      
+
       await waitForFunctionUpdate(LAMBDA_FUNCTION_NAME, LAMBDA_REGION);
     }
-    
+
     console.log('✅ Deployment successful!');
-    
+
     // Parse and display deployment info
     try {
       const result = JSON.parse(stdout);
@@ -238,7 +238,7 @@ async function main() {
   await createDeploymentPackage();
   console.log('');
   await deployToLambda();
-  
+
   console.log('');
   console.log('🎉 Deployment completed successfully!');
 }
