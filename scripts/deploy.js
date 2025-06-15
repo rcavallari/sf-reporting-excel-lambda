@@ -42,6 +42,7 @@ async function createDeploymentPackage() {
 
     // Copy necessary files for Excel Lambda
     const filesToCopy = [
+      'index.js',
       'src',
       'package.json',
       'yarn.lock'
@@ -130,9 +131,14 @@ async function deployToLambda() {
     console.log(`   📡 Updating function: ${LAMBDA_FUNCTION_NAME}`);
     console.log(`   🌍 Region: ${LAMBDA_REGION}`);
 
-    const updateCommand = `aws lambda update-function-code --function-name ${LAMBDA_FUNCTION_NAME} --zip-file fileb://${zipPath} --region ${LAMBDA_REGION}`;
+    // Update function code
+    const updateCodeCommand = `aws lambda update-function-code --function-name ${LAMBDA_FUNCTION_NAME} --zip-file fileb://${zipPath} --region ${LAMBDA_REGION}`;
+    const { stdout } = await execAsync(updateCodeCommand);
     
-    const { stdout } = await execAsync(updateCommand);
+    // Update function configuration to ensure handler is correct
+    console.log('   🔧 Updating function configuration...');
+    const updateConfigCommand = `aws lambda update-function-configuration --function-name ${LAMBDA_FUNCTION_NAME} --handler index.handler --region ${LAMBDA_REGION}`;
+    await execAsync(updateConfigCommand);
     
     console.log('✅ Deployment successful!');
     
