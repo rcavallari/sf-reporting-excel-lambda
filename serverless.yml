@@ -7,8 +7,8 @@ provider:
   runtime: nodejs22.x
   stage: ${opt:stage, 'prod'}
   region: ${env:REGION, 'us-west-2'}
-  memorySize: 1024
-  timeout: 300
+  memorySize: 4096
+  timeout: 600
 
   environment:
     NODE_ENV: ${env:NODE_ENV, 'production'}
