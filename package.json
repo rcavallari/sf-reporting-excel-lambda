@@ -1,0 +1,46 @@
+{
+  "name": "excel-report-service",
+  "version": "1.0.0",
+  "description": "AWS Lambda service for generating Excel reports from S3 data",
+  "main": "src/handlers/lambda-handler.js",
+  "scripts": {
+    "start": "node scripts/generate-report.js",
+    "dev": "NODE_ENV=development node scripts/generate-report.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "lint": "eslint src/ scripts/",
+    "lint:fix": "eslint src/ scripts/ --fix",
+    "deploy": "serverless deploy",
+    "deploy:dev": "serverless deploy --stage dev",
+    "deploy:prod": "serverless deploy --stage prod",
+    "package": "serverless package",
+    "logs": "serverless logs -f generateReport -t",
+    "invoke:local": "serverless invoke local -f generateReport -p test/sample-event.json",
+    "invoke:remote": "serverless invoke -f generateReport -p test/sample-event.json"
+  },
+  "keywords": [
+    "excel",
+    "reports",
+    "aws-lambda",
+    "serverless",
+    "s3"
+  ],
+  "author": "Excel Report Service Team",
+  "license": "MIT",
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.826.0",
+    "@aws-sdk/s3-request-presigner": "^3.826.0",
+    "axios": "^1.6.7",
+    "dotenv": "^16.4.7",
+    "excel4node": "^1.8.2"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0",
+    "serverless": "^3.38.0",
+    "serverless-offline": "^13.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

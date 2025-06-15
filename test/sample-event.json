@@ -1,0 +1,12 @@
+{
+  "httpMethod": "POST",
+  "path": "/generate-report",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "body": "{\"idProject\": \"test_project_123\", \"options\": {\"isFinal\": true, \"hasPrices\": false, \"largeDataSet\": false}}",
+  "requestContext": {
+    "requestId": "test-request-id-123",
+    "stage": "test"
+  }
+}
