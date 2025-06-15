@@ -119,6 +119,31 @@ async function createDeploymentPackage() {
   }
 }
 
+async function waitForFunctionUpdate(functionName, region, maxWaitTime = 60000) {
+  console.log('   ⏳ Waiting for function to be ready...');
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < maxWaitTime) {
+    try {
+      const { stdout } = await execAsync(`aws lambda get-function --function-name ${functionName} --region ${region}`);
+      const functionInfo = JSON.parse(stdout);
+      
+      if (functionInfo.Configuration.State === 'Active' && functionInfo.Configuration.LastUpdateStatus === 'Successful') {
+        console.log('   ✅ Function is ready');
+        return;
+      }
+      
+      console.log(`   ⏳ Function state: ${functionInfo.Configuration.State}, Status: ${functionInfo.Configuration.LastUpdateStatus}`);
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds
+    } catch (error) {
+      console.log('   ⏳ Checking function status...');
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+  }
+  
+  throw new Error('Function did not become ready within the timeout period');
+}
+
 async function deployToLambda() {
   try {
     console.log('🚀 Deploying to AWS Lambda...');
@@ -131,14 +156,48 @@ async function deployToLambda() {
     console.log(`   📡 Updating function: ${LAMBDA_FUNCTION_NAME}`);
     console.log(`   🌍 Region: ${LAMBDA_REGION}`);
 
+    // Wait for function to be ready before starting
+    await waitForFunctionUpdate(LAMBDA_FUNCTION_NAME, LAMBDA_REGION, 30000);
+
     // Update function code
+    console.log('   📦 Updating function code...');
     const updateCodeCommand = `aws lambda update-function-code --function-name ${LAMBDA_FUNCTION_NAME} --zip-file fileb://${zipPath} --region ${LAMBDA_REGION}`;
     const { stdout } = await execAsync(updateCodeCommand);
     
-    // Update function configuration to ensure handler is correct
+    // Wait for code update to complete
+    await waitForFunctionUpdate(LAMBDA_FUNCTION_NAME, LAMBDA_REGION);
+    
+    // Update function configuration
     console.log('   🔧 Updating function configuration...');
-    const updateConfigCommand = `aws lambda update-function-configuration --function-name ${LAMBDA_FUNCTION_NAME} --handler index.handler --region ${LAMBDA_REGION}`;
-    await execAsync(updateConfigCommand);
+    const envVars = {
+      NODE_ENV: process.env.NODE_ENV || 'production',
+      SERVICE_VERSION: 'report-excel-lambda-v1.0.0',
+      LOG_LEVEL: process.env.LOG_LEVEL || 'INFO',
+      BUCKET: process.env.BUCKET,
+      IMAGES_BUCKET: process.env.IMAGES_BUCKET,
+      IMAGES_REGION: process.env.IMAGES_REGION || 'us-east-1',
+      REGION: process.env.REGION || LAMBDA_REGION
+    };
+
+    // Filter out undefined values
+    const validEnvVars = Object.fromEntries(
+      Object.entries(envVars).filter(([key, value]) => value !== undefined)
+    );
+
+    if (Object.keys(validEnvVars).length > 0) {
+      const envString = JSON.stringify({ Variables: validEnvVars }).replace(/"/g, '\\"');
+      const updateConfigCommand = `aws lambda update-function-configuration --function-name ${LAMBDA_FUNCTION_NAME} --handler index.handler --environment "${envString}" --region ${LAMBDA_REGION}`;
+      await execAsync(updateConfigCommand);
+      
+      // Wait for configuration update to complete
+      await waitForFunctionUpdate(LAMBDA_FUNCTION_NAME, LAMBDA_REGION);
+    } else {
+      // Just update handler if no environment variables
+      const updateConfigCommand = `aws lambda update-function-configuration --function-name ${LAMBDA_FUNCTION_NAME} --handler index.handler --region ${LAMBDA_REGION}`;
+      await execAsync(updateConfigCommand);
+      
+      await waitForFunctionUpdate(LAMBDA_FUNCTION_NAME, LAMBDA_REGION);
+    }
     
     console.log('✅ Deployment successful!');
     
