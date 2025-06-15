@@ -1,0 +1,14 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "lambda:UpdateFunctionCode",
+                "lambda:UpdateFunctionConfiguration",
+                "lambda:GetFunction"
+            ],
+            "Resource": "arn:aws:lambda:us-west-2:830189347873:function:report-excel-lambda"
+        }
+    ]
+}
