@@ -22,8 +22,8 @@ class DynamoJobService {
     const recordId = `job_${jobId}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`
 
     const jobRecord = {
-      recordId, // Primary key
-      jobId, // Regular attribute for querying
+      recordId, // Primary key - unique for each record
+      jobId, // Regular attribute for filtering
       idProject,
       status: 'pending',
       progress: 0,
@@ -32,6 +32,7 @@ class DynamoJobService {
       ttl,
       options,
       recordType: 'main_job',
+      sequenceNumber: 0, // Main job is sequence 0
       metadata: {
         totalSteps: 5, // estimation: validate, fetch data, process, generate excel, upload
         currentStep: 0,
@@ -45,7 +46,7 @@ class DynamoJobService {
         Item: jobRecord
       }))
       
-      logger.info('Job created in DynamoDB', { jobId, idProject, recordId })
+      logger.info('Job created in DynamoDB', { jobId, idProject, recordId, recordType: 'main_job' })
       return jobRecord
     } catch (error) {
       logger.error('Failed to create job in DynamoDB', { jobId, error: error.message })
@@ -55,11 +56,10 @@ class DynamoJobService {
 
   async getJob(jobId) {
     try {
-      // Query by jobId since it's no longer the primary key
-      const result = await this.dynamoDb.send(new QueryCommand({
+      // Scan for the main job record by jobId and recordType
+      const result = await this.dynamoDb.send(new ScanCommand({
         TableName: TABLE_NAME,
-        IndexName: 'jobId-index', // We'll need a GSI for this
-        KeyConditionExpression: 'jobId = :jobId AND recordType = :recordType',
+        FilterExpression: 'jobId = :jobId AND recordType = :recordType',
         ExpressionAttributeValues: {
           ':jobId': jobId,
           ':recordType': 'main_job'
@@ -74,21 +74,7 @@ class DynamoJobService {
       return result.Items[0]
     } catch (error) {
       logger.error('Failed to get job from DynamoDB', { jobId, error: error.message })
-      // Fallback: try scanning if GSI doesn't exist yet
-      try {
-        const scanResult = await this.dynamoDb.send(new ScanCommand({
-          TableName: TABLE_NAME,
-          FilterExpression: 'jobId = :jobId AND recordType = :recordType',
-          ExpressionAttributeValues: {
-            ':jobId': jobId,
-            ':recordType': 'main_job'
-          }
-        }))
-        return scanResult.Items?.[0] || null
-      } catch (scanError) {
-        logger.error('Fallback scan also failed', { jobId, error: scanError.message })
-        throw error
-      }
+      throw error
     }
   }
 
@@ -156,8 +142,8 @@ class DynamoJobService {
       const ttl = Math.floor((Date.now() + (TTL_HOURS * 60 * 60 * 1000)) / 1000)
       
       const progressLogEntry = {
-        recordId: progressLogId, // Use progressLogId as the primary key
-        jobId, // Keep reference to the original job
+        recordId: progressLogId, // Primary key - unique for each record
+        jobId, // Regular attribute for filtering
         sequenceNumber,
         timestamp,
         progress: Math.min(100, Math.max(0, progress)),
@@ -385,6 +371,30 @@ class DynamoJobService {
     } catch (error) {
       logger.error('Failed to get job with progress logs', { jobId, error: error.message })
       throw error
+    }
+  }
+
+  async getAllJobRecords(jobId) {
+    try {
+      // Get all records for this job (main job + progress logs)
+      const result = await this.dynamoDb.send(new ScanCommand({
+        TableName: TABLE_NAME,
+        FilterExpression: 'jobId = :jobId',
+        ExpressionAttributeValues: {
+          ':jobId': jobId
+        }
+      }))
+      
+      // Sort by sequence number (main job = 0, progress logs = 1, 2, 3...)
+      const allRecords = (result.Items || []).sort((a, b) => {
+        return (a.sequenceNumber || 0) - (b.sequenceNumber || 0)
+      })
+      
+      logger.info('Retrieved all job records', { jobId, count: allRecords.length })
+      return allRecords
+    } catch (error) {
+      logger.error('Failed to get all job records', { jobId, error: error.message })
+      return []
     }
   }
 }
