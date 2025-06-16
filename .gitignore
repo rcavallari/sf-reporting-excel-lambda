@@ -34,6 +34,10 @@ tmp/
 temp/
 .tmp/
 
+# Build artifacts
+dist/
+function.zip
+
 # Excel files
 *.xlsx
 *.xls
