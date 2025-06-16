@@ -66,22 +66,38 @@ class DynamoJobService {
   }
 
   async updateJobProgress(jobId, progress, stepName = null, additionalData = {}) {
+    const now = new Date().toISOString()
     const updateExpression = ['SET progress = :progress, updatedAt = :updatedAt']
     const expressionAttributeValues = {
       ':progress': Math.min(100, Math.max(0, progress)),
-      ':updatedAt': new Date().toISOString()
+      ':updatedAt': now
     }
 
     if (stepName) {
-      updateExpression.push('metadata.stepName = :stepName')
+      updateExpression.push('metadata.stepName = :stepName, metadata.currentStep = metadata.currentStep + :increment')
       expressionAttributeValues[':stepName'] = stepName
+      expressionAttributeValues[':increment'] = 1
     }
+
+    // Add progress log entry
+    const progressLog = {
+      timestamp: now,
+      progress,
+      stepName: stepName || 'unknown',
+      ...additionalData
+    }
+    
+    updateExpression.push('progressLogs = list_append(if_not_exists(progressLogs, :emptyList), :newLog)')
+    expressionAttributeValues[':emptyList'] = []
+    expressionAttributeValues[':newLog'] = [progressLog]
 
     // Add any additional data to the update
     Object.entries(additionalData).forEach(([key, value], index) => {
-      const attributeKey = `:data${index}`
-      updateExpression.push(`${key} = ${attributeKey}`)
-      expressionAttributeValues[attributeKey] = value
+      if (key !== 'timestamp' && key !== 'progress' && key !== 'stepName') {
+        const attributeKey = `:extraData${index}`
+        updateExpression.push(`${key} = ${attributeKey}`)
+        expressionAttributeValues[attributeKey] = value
+      }
     })
 
     try {
@@ -92,7 +108,7 @@ class DynamoJobService {
         ExpressionAttributeValues: expressionAttributeValues
       }))
 
-      logger.info('Job progress updated', { jobId, progress, stepName })
+      logger.info('Job progress updated', { jobId, progress, stepName, timestamp: now })
     } catch (error) {
       logger.error('Failed to update job progress', { jobId, progress, error: error.message })
       throw error

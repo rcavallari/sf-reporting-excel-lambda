@@ -49,64 +49,27 @@ exports.handler = async (event, context) => {
     // Create job in DynamoDB
     await jobService.createJob(jobId, idProject, options)
     
-    // Process the report synchronously with progress tracking
-    // This ensures Lambda doesn't terminate before processing completes
-    try {
-      logger.info('Starting synchronous report processing with progress tracking', { jobId, idProject })
-      await processReportAsync(jobId, idProject, options, requestId)
-      
-      // Get final job status
-      const finalJob = await jobService.getJob(jobId)
-      
-      if (finalJob && finalJob.status === 'completed') {
-        // Return successful completion with download URL
-        return createResponse(200, {
-          success: true,
-          message: 'Excel report generated successfully',
-          data: {
-            jobId,
-            idProject,
-            status: 'completed',
-            result: finalJob.result,
-            processingTime: finalJob.result?.processingTime,
-            generatedAt: finalJob.completedAt
-          },
-          requestId
-        })
-      } else {
-        // Return job ID for status checking if still processing
-        return createResponse(202, {
-          success: true,
-          message: 'Report generation in progress',
-          data: {
-            jobId,
-            idProject,
-            status: finalJob?.status || 'processing',
-            progress: finalJob?.progress || 0,
-            statusCheckUrl: `/jobs/${jobId}`,
-            createdAt: new Date().toISOString()
-          },
-          requestId
-        })
-      }
-      
-    } catch (error) {
-      logger.error('Report processing failed', { jobId, requestId, error: error.message })
-      
-      // Mark job as failed
-      try {
-        await jobService.failJob(jobId, error)
-      } catch (updateError) {
-        logger.error('Failed to update job failure status', { jobId, updateError: updateError.message })
-      }
-      
-      return createErrorResponse(500, 'Report generation failed', {
+    // Start async processing - frontend will poll for results
+    // Don't await - let it run in background while we return job ID immediately
+    processReportAsync(jobId, idProject, options, requestId).catch(error => {
+      logger.error('Async processing failed', { jobId, requestId, error: error.message, stack: error.stack })
+    })
+
+    // ALWAYS return job ID immediately - frontend polls DynamoDB for progress/results
+    return createResponse(202, {
+      success: true,
+      message: 'Report generation started',
+      data: {
         jobId,
-        error: error.message,
-        requestId,
-        timestamp: new Date().toISOString()
-      })
-    }
+        idProject,
+        status: 'pending',
+        progress: 0,
+        estimatedCompletionTime: '2-5 minutes',
+        statusCheckUrl: `/jobs/${jobId}`,
+        createdAt: new Date().toISOString()
+      },
+      requestId
+    })
 
   } catch (error) {
     logger.error('Error starting Excel report generation', {
