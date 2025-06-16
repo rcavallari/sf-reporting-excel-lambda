@@ -1,5 +1,5 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb')
-const { DynamoDBDocumentClient, PutCommand, GetCommand, UpdateCommand } = require('@aws-sdk/lib-dynamodb')
+const { DynamoDBDocumentClient, PutCommand, GetCommand, UpdateCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb')
 const { logger } = require('../utils/logger')
 
 const TABLE_NAME = process.env.JOBS_TABLE || 'excel-report-jobs'
@@ -67,40 +67,29 @@ class DynamoJobService {
 
   async updateJobProgress(jobId, progress, stepName = null, additionalData = {}) {
     const now = new Date().toISOString()
-    const updateExpression = ['SET progress = :progress, updatedAt = :updatedAt']
-    const expressionAttributeValues = {
-      ':progress': Math.min(100, Math.max(0, progress)),
-      ':updatedAt': now
-    }
-
-    if (stepName) {
-      updateExpression.push('metadata.stepName = :stepName, metadata.currentStep = metadata.currentStep + :increment')
-      expressionAttributeValues[':stepName'] = stepName
-      expressionAttributeValues[':increment'] = 1
-    }
-
-    // Add progress log entry
-    const progressLog = {
-      timestamp: now,
-      progress,
-      stepName: stepName || 'unknown',
-      ...additionalData
-    }
     
-    updateExpression.push('progressLogs = list_append(if_not_exists(progressLogs, :emptyList), :newLog)')
-    expressionAttributeValues[':emptyList'] = []
-    expressionAttributeValues[':newLog'] = [progressLog]
-
-    // Add any additional data to the update
-    Object.entries(additionalData).forEach(([key, value], index) => {
-      if (key !== 'timestamp' && key !== 'progress' && key !== 'stepName') {
-        const attributeKey = `:extraData${index}`
-        updateExpression.push(`${key} = ${attributeKey}`)
-        expressionAttributeValues[attributeKey] = value
-      }
-    })
-
     try {
+      // Update main job record
+      const updateExpression = ['SET progress = :progress, updatedAt = :updatedAt']
+      const expressionAttributeValues = {
+        ':progress': Math.min(100, Math.max(0, progress)),
+        ':updatedAt': now
+      }
+
+      if (stepName) {
+        updateExpression.push('metadata.stepName = :stepName')
+        expressionAttributeValues[':stepName'] = stepName
+      }
+
+      // Add any additional data to the main job record
+      Object.entries(additionalData).forEach(([key, value], index) => {
+        if (key !== 'timestamp' && key !== 'progress' && key !== 'stepName') {
+          const attributeKey = `:extraData${index}`
+          updateExpression.push(`${key} = ${attributeKey}`)
+          expressionAttributeValues[attributeKey] = value
+        }
+      })
+
       await this.dynamoDb.send(new UpdateCommand({
         TableName: TABLE_NAME,
         Key: { jobId },
@@ -109,9 +98,41 @@ class DynamoJobService {
       }))
 
       logger.info('Job progress updated', { jobId, progress, stepName, timestamp: now })
+
+      // Create separate progress log entry
+      await this.createProgressLogEntry(jobId, progress, stepName, additionalData, now)
+      
     } catch (error) {
       logger.error('Failed to update job progress', { jobId, progress, error: error.message })
-      throw error
+      // Don't throw error - continue processing even if progress update fails
+    }
+  }
+
+  async createProgressLogEntry(jobId, progress, stepName, additionalData = {}, timestamp) {
+    try {
+      const progressLogId = `${jobId}_${timestamp.replace(/[:.]/g, '_')}`
+      const ttl = Math.floor((Date.now() + (TTL_HOURS * 60 * 60 * 1000)) / 1000)
+      
+      const progressLogEntry = {
+        progressLogId,
+        jobId,
+        timestamp,
+        progress: Math.min(100, Math.max(0, progress)),
+        stepName: stepName || 'unknown',
+        recordType: 'progress_log',
+        ttl,
+        ...additionalData
+      }
+
+      await this.dynamoDb.send(new PutCommand({
+        TableName: TABLE_NAME,
+        Item: progressLogEntry
+      }))
+
+      logger.info('Progress log entry created', { progressLogId, jobId, progress, stepName })
+    } catch (error) {
+      logger.error('Failed to create progress log entry', { jobId, progress, error: error.message })
+      // Don't throw error - this is just logging
     }
   }
 
@@ -173,6 +194,7 @@ class DynamoJobService {
   }
 
   async completeJob(jobId, result) {
+    const now = new Date().toISOString()
     const completionData = {
       status: 'completed',
       progress: 100,
@@ -186,8 +208,21 @@ class DynamoJobService {
     }
 
     try {
+      // Update main job record with completion data
       await this.updateJobStatus(jobId, 'completed', completionData)
-      logger.info('Job completed successfully', { jobId, filename: result.filename })
+      
+      // Create final completion progress log with all essential info
+      await this.createProgressLogEntry(jobId, 100, 'completed', {
+        filename: result.filename,
+        s3Key: result.s3Key,
+        downloadUrl: result.signedUrl,
+        processingTime: result.processingTime,
+        stats: result.stats,
+        success: true,
+        message: 'Report generation completed successfully'
+      }, now)
+      
+      logger.info('Job completed successfully', { jobId, filename: result.filename, downloadUrl: result.signedUrl })
     } catch (error) {
       logger.error('Failed to complete job', { jobId, error: error.message })
       throw error
@@ -195,12 +230,13 @@ class DynamoJobService {
   }
 
   async failJob(jobId, error, progress = null) {
+    const now = new Date().toISOString()
     const failureData = {
       status: 'failed',
       error: {
         message: error.message,
         type: error.constructor.name,
-        timestamp: new Date().toISOString()
+        timestamp: now
       }
     }
 
@@ -209,11 +245,53 @@ class DynamoJobService {
     }
 
     try {
+      // Update main job record with failure data
       await this.updateJobStatus(jobId, 'failed', failureData)
+      
+      // Create final failure progress log with error details
+      await this.createProgressLogEntry(jobId, progress || 0, 'failed', {
+        success: false,
+        error: {
+          message: error.message,
+          type: error.constructor.name,
+          stack: error.stack
+        },
+        message: `Report generation failed: ${error.message}`
+      }, now)
+      
       logger.error('Job failed', { jobId, error: error.message })
     } catch (updateError) {
       logger.error('Failed to update job failure status', { jobId, error: updateError.message })
       throw updateError
+    }
+  }
+
+  async getJobProgressLogs(jobId) {
+    try {
+      // For now, return empty array since we need to set up GSI
+      // The main job record will have the current progress
+      logger.info('Progress logs query skipped - requires GSI setup', { jobId })
+      return []
+    } catch (error) {
+      logger.error('Failed to get progress logs', { jobId, error: error.message })
+      return []
+    }
+  }
+
+  async getJobWithProgressLogs(jobId) {
+    try {
+      const job = await this.getJob(jobId)
+      if (!job) return null
+
+      const progressLogs = await this.getJobProgressLogs(jobId)
+      
+      return {
+        ...job,
+        progressLogs
+      }
+    } catch (error) {
+      logger.error('Failed to get job with progress logs', { jobId, error: error.message })
+      throw error
     }
   }
 }
