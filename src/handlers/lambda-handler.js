@@ -2,28 +2,17 @@ const { createExcelReportService } = require('../excel-service')
 const { validateInput, createResponse, createErrorResponse, generateJobId } = require('../utils/lambda-utils')
 const { DynamoJobService } = require('../services/dynamo-service')
 const { logger } = require('../utils/logger')
-const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda')
 
 /**
  * AWS Lambda handler for Excel report generation
  * Receives requests from API Gateway and processes them asynchronously
  */
 exports.handler = async (event, context) => {
-  context.callbackWaitsForEmptyEventLoop = false
-  
   const requestId = context.awsRequestId
   logger.info('Lambda invocation started', { requestId, event })
 
   try {
-    // Check if this is an async processing request
-    if (event.action === 'processReport') {
-      const { jobId, idProject, options } = event
-      logger.info('Processing async report request', { requestId, jobId, idProject })
-      await processReportAsync(jobId, idProject, options, requestId)
-      return { statusCode: 200, body: 'Async processing completed' }
-    }
-
-    // Parse request body for API Gateway requests
+    // Parse request body
     let body
     if (typeof event.body === 'string') {
       try {
@@ -60,28 +49,27 @@ exports.handler = async (event, context) => {
     // Create job in DynamoDB
     await jobService.createJob(jobId, idProject, options)
     
-    // Start async processing via Lambda self-invocation
-    try {
-      const lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || 'us-west-2' })
-      const invokeParams = {
-        FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME,
-        InvocationType: 'Event', // Asynchronous invocation
-        Payload: JSON.stringify({
-          action: 'processReport',
-          jobId,
-          idProject,
-          options,
-          requestId
-        })
+    // Check if this is a synchronous test or we should process immediately
+    const processSync = options.processSync || process.env.PROCESS_SYNC === 'true'
+    
+    if (processSync) {
+      // Process synchronously for testing or immediate processing
+      try {
+        await processReportAsync(jobId, idProject, options, requestId)
+      } catch (error) {
+        logger.error('Sync processing failed', { jobId, requestId, error: error.message })
       }
+    } else {
+      // Start async processing with context handling
+      context.callbackWaitsForEmptyEventLoop = false
       
-      await lambdaClient.send(new InvokeCommand(invokeParams))
-      logger.info('Async processing Lambda invoked', { jobId })
-    } catch (error) {
-      logger.error('Failed to invoke async processing Lambda', { jobId, error: error.message })
-      // Fall back to direct async processing
-      processReportAsync(jobId, idProject, options, requestId).catch(error => {
-        logger.error('Async processing failed', { jobId, error: error.message })
+      // Use process.nextTick to defer execution but keep it in same context
+      process.nextTick(async () => {
+        try {
+          await processReportAsync(jobId, idProject, options, requestId)
+        } catch (error) {
+          logger.error('Async processing failed', { jobId, requestId, error: error.message, stack: error.stack })
+        }
       })
     }
 
