@@ -11,6 +11,7 @@ class DynamoJobService {
       region: process.env.REGION || process.env.AWS_REGION || 'us-west-2'
     })
     this.dynamoDb = DynamoDBDocumentClient.from(client)
+    this.sequenceCounters = new Map() // Track sequence numbers per job
   }
 
   async createJob(jobId, idProject, options = {}) {
@@ -97,10 +98,18 @@ class DynamoJobService {
         ExpressionAttributeValues: expressionAttributeValues
       }))
 
-      logger.info('Job progress updated', { jobId, progress, stepName, timestamp: now })
+      // Get or initialize sequence number for this job
+      if (!this.sequenceCounters.has(jobId)) {
+        this.sequenceCounters.set(jobId, 1)
+      } else {
+        this.sequenceCounters.set(jobId, this.sequenceCounters.get(jobId) + 1)
+      }
+      const sequenceNumber = this.sequenceCounters.get(jobId)
 
-      // Create separate progress log entry
-      await this.createProgressLogEntry(jobId, progress, stepName, additionalData, now)
+      logger.info('Job progress updated', { jobId, progress, stepName, sequenceNumber, timestamp: now })
+
+      // Create separate progress log entry with sequence number
+      await this.createProgressLogEntry(jobId, progress, stepName, additionalData, now, sequenceNumber)
       
     } catch (error) {
       logger.error('Failed to update job progress', { jobId, progress, error: error.message })
@@ -108,17 +117,19 @@ class DynamoJobService {
     }
   }
 
-  async createProgressLogEntry(jobId, progress, stepName, additionalData = {}, timestamp) {
+  async createProgressLogEntry(jobId, progress, stepName, additionalData = {}, timestamp, sequenceNumber = 1) {
     try {
-      // Create unique primary key with milliseconds and random suffix to avoid collisions
+      // Create unique primary key with sequence number, timestamp and random suffix
       const cleanTimestamp = timestamp.replace(/[:.]/g, '_')
-      const randomSuffix = Math.random().toString(36).substring(2, 6)
-      const progressLogId = `${jobId}_${cleanTimestamp}_${randomSuffix}`
+      const paddedSequence = sequenceNumber.toString().padStart(3, '0') // e.g., 001, 002, 010
+      const randomSuffix = Math.random().toString(36).substring(2, 4) // shorter suffix
+      const progressLogId = `${jobId}_seq${paddedSequence}_${cleanTimestamp}_${randomSuffix}`
       const ttl = Math.floor((Date.now() + (TTL_HOURS * 60 * 60 * 1000)) / 1000)
       
       const progressLogEntry = {
-        progressLogId,
-        jobId,
+        jobId: progressLogId, // Use progressLogId as the primary key
+        originalJobId: jobId, // Keep reference to the original job
+        sequenceNumber,
         timestamp,
         progress: Math.min(100, Math.max(0, progress)),
         stepName: stepName || 'unknown',
@@ -132,9 +143,18 @@ class DynamoJobService {
         Item: progressLogEntry
       }))
 
-      logger.info('Progress log entry created', { progressLogId, jobId, progress, stepName })
+      logger.info('Progress log entry created', { 
+        progressLogId, 
+        jobId, 
+        progress, 
+        stepName, 
+        sequenceNumber,
+        tableName: TABLE_NAME,
+        recordType: 'progress_log',
+        uniqueKey: progressLogId
+      })
     } catch (error) {
-      logger.error('Failed to create progress log entry', { jobId, progress, error: error.message })
+      logger.error('Failed to create progress log entry', { originalJobId: jobId, progress, sequenceNumber, error: error.message })
       // Don't throw error - this is just logging
     }
   }
@@ -214,6 +234,14 @@ class DynamoJobService {
       // Update main job record with completion data
       await this.updateJobStatus(jobId, 'completed', completionData)
       
+      // Get final sequence number
+      if (!this.sequenceCounters.has(jobId)) {
+        this.sequenceCounters.set(jobId, 1)
+      } else {
+        this.sequenceCounters.set(jobId, this.sequenceCounters.get(jobId) + 1)
+      }
+      const finalSequenceNumber = this.sequenceCounters.get(jobId)
+
       // Create final completion progress log with all essential info
       await this.createProgressLogEntry(jobId, 100, 'completed', {
         filename: result.filename,
@@ -224,9 +252,12 @@ class DynamoJobService {
         imageStats: result.imageStats || { successful: 0, failed: 0, failedIds: [] },
         success: true,
         message: 'Report generation completed successfully'
-      }, now)
+      }, now, finalSequenceNumber)
       
       logger.info('Job completed successfully', { jobId, filename: result.filename, downloadUrl: result.signedUrl })
+      
+      // Clean up sequence counter to prevent memory leaks
+      this.sequenceCounters.delete(jobId)
     } catch (error) {
       logger.error('Failed to complete job', { jobId, error: error.message })
       throw error
@@ -252,6 +283,14 @@ class DynamoJobService {
       // Update main job record with failure data
       await this.updateJobStatus(jobId, 'failed', failureData)
       
+      // Get final sequence number for failure
+      if (!this.sequenceCounters.has(jobId)) {
+        this.sequenceCounters.set(jobId, 1)
+      } else {
+        this.sequenceCounters.set(jobId, this.sequenceCounters.get(jobId) + 1)
+      }
+      const failureSequenceNumber = this.sequenceCounters.get(jobId)
+
       // Create final failure progress log with error details
       await this.createProgressLogEntry(jobId, progress || 0, 'failed', {
         success: false,
@@ -261,9 +300,12 @@ class DynamoJobService {
           stack: error.stack
         },
         message: `Report generation failed: ${error.message}`
-      }, now)
+      }, now, failureSequenceNumber)
       
       logger.error('Job failed', { jobId, error: error.message })
+      
+      // Clean up sequence counter to prevent memory leaks
+      this.sequenceCounters.delete(jobId)
     } catch (updateError) {
       logger.error('Failed to update job failure status', { jobId, error: updateError.message })
       throw updateError

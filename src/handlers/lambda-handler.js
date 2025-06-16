@@ -166,7 +166,7 @@ async function processReportAsync(jobId, idProject, options, requestId) {
   try {
     logger.info('Starting async report processing', { jobId, idProject })
     
-    // Update job status to processing
+    // Initialize sequence counter and update job status to processing
     await jobService.updateJobProgress(jobId, 10, 'starting')
     
     // Create progress callback for the report service
