@@ -60,21 +60,43 @@ exports.handler = async (event, context) => {
     
     // Start async processing via Lambda self-invocation
     try {
-      const lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || 'us-west-2' })
-      const invokeParams = {
-        FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME,
-        InvocationType: 'Event', // Asynchronous invocation
-        Payload: JSON.stringify({
-          action: 'processReport',
-          jobId,
-          idProject,
-          options,
-          requestId
-        })
+      const functionName = process.env.AWS_LAMBDA_FUNCTION_NAME
+      const region = process.env.AWS_REGION || 'us-west-2'
+      
+      logger.info('Starting Lambda self-invocation', { 
+        jobId, 
+        functionName, 
+        region,
+        hasLambdaFunctionName: !!functionName 
+      })
+      
+      if (!functionName) {
+        throw new Error('AWS_LAMBDA_FUNCTION_NAME environment variable is not set')
       }
       
-      await lambdaClient.send(new InvokeCommand(invokeParams))
-      logger.info('Async processing Lambda invoked successfully', { jobId })
+      const lambdaClient = new LambdaClient({ region })
+      const payload = {
+        action: 'processReport',
+        jobId,
+        idProject,
+        options,
+        requestId
+      }
+      
+      const invokeParams = {
+        FunctionName: functionName,
+        InvocationType: 'Event', // Asynchronous invocation
+        Payload: JSON.stringify(payload)
+      }
+      
+      logger.info('Lambda invocation payload', { jobId, payload })
+      
+      const result = await lambdaClient.send(new InvokeCommand(invokeParams))
+      logger.info('Async processing Lambda invoked successfully', { 
+        jobId, 
+        statusCode: result.StatusCode,
+        payload: result.Payload 
+      })
       
     } catch (error) {
       logger.error('Failed to invoke async processing Lambda', { jobId, error: error.message })
