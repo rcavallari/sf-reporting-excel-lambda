@@ -257,6 +257,11 @@ class DynamoJobService {
         } else if (key === 'error') {
           updateExpression.push(`#error = ${attributeKey}`)
           expressionAttributeNames['#error'] = 'error'
+        } else if (key === 'timestamp') {
+          updateExpression.push(`#ts = ${attributeKey}`)
+          expressionAttributeNames['#ts'] = 'timestamp'
+        } else if (key === 'stepName') {
+          updateExpression.push(`stepName = ${attributeKey}`)
         } else {
           updateExpression.push(`${key} = ${attributeKey}`)
         }
