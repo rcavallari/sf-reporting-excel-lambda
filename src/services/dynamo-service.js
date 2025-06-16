@@ -118,7 +118,25 @@ class DynamoJobService {
     // Add any additional data to the update
     Object.entries(additionalData).forEach(([key, value], index) => {
       const attributeKey = `:data${index}`
-      updateExpression.push(`${key} = ${attributeKey}`)
+      
+      // Skip status since it's already handled above
+      if (key === 'status') {
+        return
+      }
+      
+      // Handle reserved keywords and nested objects
+      if (key === 'progress') {
+        updateExpression.push(`progress = ${attributeKey}`)
+      } else if (key === 'result') {
+        updateExpression.push(`#result = ${attributeKey}`)
+        expressionAttributeNames['#result'] = 'result'
+      } else if (key === 'error') {
+        updateExpression.push(`#error = ${attributeKey}`)
+        expressionAttributeNames['#error'] = 'error'
+      } else {
+        updateExpression.push(`${key} = ${attributeKey}`)
+      }
+      
       expressionAttributeValues[attributeKey] = value
     })
 
