@@ -74,6 +74,8 @@ jobs:
         BUCKET: ${{ vars.BUCKET }}
         IMAGES_BUCKET: ${{ vars.IMAGES_BUCKET }}
         IMAGES_REGION: us-east-1
+        JOBS_TABLE: ${{ vars.JOBS_TABLE || 'excel-report-jobs' }}
+        JOB_TTL_HOURS: ${{ vars.JOB_TTL_HOURS || '24' }}
         NODE_ENV: production
         LOG_LEVEL: INFO
     

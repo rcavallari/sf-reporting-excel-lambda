@@ -1,10 +1,11 @@
 const { createExcelReportService } = require('../excel-service')
-const { validateInput, createResponse, createErrorResponse } = require('../utils/lambda-utils')
+const { validateInput, createResponse, createErrorResponse, generateJobId } = require('../utils/lambda-utils')
+const { DynamoJobService } = require('../services/dynamo-service')
 const { logger } = require('../utils/logger')
 
 /**
  * AWS Lambda handler for Excel report generation
- * Receives requests from API Gateway
+ * Receives requests from API Gateway and processes them asynchronously
  */
 exports.handler = async (event, context) => {
   context.callbackWaitsForEmptyEventLoop = false
@@ -43,40 +44,35 @@ exports.handler = async (event, context) => {
       remainingTime: context.getRemainingTimeInMillis()
     })
 
-    // Create service instance
-    const reportService = createExcelReportService(idProject, options)
+    // Generate job ID and create job record
+    const jobId = generateJobId()
+    const jobService = new DynamoJobService()
     
-    // Generate report
-    const startTime = Date.now()
-    const result = await reportService.generateReport()
-    const processingTime = Date.now() - startTime
-
-    logger.info('Report generated successfully', {
-      requestId,
-      idProject,
-      processingTime,
-      filename: result.filename,
-      stats: result.stats
+    // Create job in DynamoDB
+    await jobService.createJob(jobId, idProject, options)
+    
+    // Start async processing (don't wait for completion)
+    processReportAsync(jobId, idProject, options, requestId).catch(error => {
+      logger.error('Async processing failed', { jobId, error: error.message })
     })
 
-    // Return successful response
-    return createResponse(200, {
+    // Return job ID immediately
+    return createResponse(202, {
       success: true,
-      message: 'Excel report generated successfully',
+      message: 'Report generation started',
       data: {
+        jobId,
         idProject,
-        filename: result.filename,
-        s3Key: result.s3Key,
-        downloadUrl: result.signedUrl,
-        processingTime,
-        generatedAt: new Date().toISOString(),
-        stats: result.stats
+        status: 'pending',
+        estimatedCompletionTime: '2-5 minutes',
+        statusCheckUrl: `/jobs/${jobId}`,
+        createdAt: new Date().toISOString()
       },
       requestId
     })
 
   } catch (error) {
-    logger.error('Error generating Excel report', {
+    logger.error('Error starting Excel report generation', {
       requestId,
       error: error.message,
       stack: error.stack
@@ -89,15 +85,108 @@ exports.handler = async (event, context) => {
     if (error.message.includes('idProject is required')) {
       statusCode = 400
       message = 'Missing required parameter: idProject'
-    } else if (error.message.includes('not found') || error.message.includes('NoSuchKey')) {
-      statusCode = 404
-      message = 'Project data not found'
     } else if (error.message.includes('Access Denied') || error.message.includes('Forbidden')) {
       statusCode = 403
-      message = 'Access denied to project data'
+      message = 'Access denied'
     }
 
     return createErrorResponse(statusCode, message, {
+      requestId,
+      timestamp: new Date().toISOString()
+    })
+  }
+}
+
+/**
+ * Async processing function for Excel report generation
+ */
+async function processReportAsync(jobId, idProject, options, requestId) {
+  const jobService = new DynamoJobService()
+  
+  try {
+    logger.info('Starting async report processing', { jobId, idProject })
+    
+    // Update job status to processing
+    await jobService.updateJobProgress(jobId, 10, 'starting')
+    
+    // Create progress callback for the report service
+    const progressCallback = async (progress, stepName) => {
+      await jobService.updateJobProgress(jobId, progress, stepName)
+    }
+    
+    // Create service instance with progress callback
+    const reportService = createExcelReportService(idProject, { ...options, progressCallback })
+    
+    // Generate report
+    const startTime = Date.now()
+    const result = await reportService.generateReport()
+    const processingTime = Date.now() - startTime
+    
+    // Complete the job
+    await jobService.completeJob(jobId, { ...result, processingTime })
+    
+    logger.info('Async report processing completed', {
+      jobId,
+      idProject,
+      processingTime,
+      filename: result.filename
+    })
+    
+  } catch (error) {
+    logger.error('Async report processing failed', {
+      jobId,
+      idProject,
+      error: error.message,
+      stack: error.stack
+    })
+    
+    // Mark job as failed
+    await jobService.failJob(jobId, error)
+  }
+}
+
+/**
+ * Job status handler for checking report generation progress
+ */
+exports.jobStatus = async (event, context) => {
+  const requestId = context.awsRequestId
+  
+  try {
+    const jobId = event.pathParameters?.jobId
+    if (!jobId) {
+      return createErrorResponse(400, 'Job ID is required')
+    }
+    
+    const jobService = new DynamoJobService()
+    const job = await jobService.getJob(jobId)
+    
+    if (!job) {
+      return createErrorResponse(404, 'Job not found')
+    }
+    
+    return createResponse(200, {
+      success: true,
+      data: {
+        jobId: job.jobId,
+        idProject: job.idProject,
+        status: job.status,
+        progress: job.progress,
+        createdAt: job.createdAt,
+        updatedAt: job.updatedAt,
+        completedAt: job.completedAt,
+        metadata: job.metadata,
+        result: job.result,
+        error: job.error
+      }
+    })
+    
+  } catch (error) {
+    logger.error('Error checking job status', {
+      requestId,
+      error: error.message
+    })
+    
+    return createErrorResponse(500, 'Internal server error', {
       requestId,
       timestamp: new Date().toISOString()
     })

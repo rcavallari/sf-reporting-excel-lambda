@@ -176,6 +176,8 @@ async function deployToLambda() {
       BUCKET: process.env.BUCKET,
       IMAGES_BUCKET: process.env.IMAGES_BUCKET,
       IMAGES_REGION: process.env.IMAGES_REGION || 'us-east-1',
+      JOBS_TABLE: process.env.JOBS_TABLE || 'excel-report-jobs',
+      JOB_TTL_HOURS: process.env.JOB_TTL_HOURS || '24',
       REGION: process.env.REGION || LAMBDA_REGION
     };
 

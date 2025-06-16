@@ -9,6 +9,17 @@
                 "lambda:GetFunction"
             ],
             "Resource": "arn:aws:lambda:us-west-2:830189347873:function:report-excel-lambda"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "dynamodb:PutItem",
+                "dynamodb:GetItem",
+                "dynamodb:UpdateItem",
+                "dynamodb:Query",
+                "dynamodb:Scan"
+            ],
+            "Resource": "arn:aws:dynamodb:us-west-2:830189347873:table/excel-report-jobs"
         }
     ]
 }

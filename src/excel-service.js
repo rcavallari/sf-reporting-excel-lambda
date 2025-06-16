@@ -660,17 +660,28 @@ class ScvHeadersGenerator {
 }
 
 class ExcelReportService {
-  constructor(config) {
+  constructor(config, options = {}) {
     if (!config || !(config instanceof ReportConfiguration)) {
       throw new Error('ExcelReportService requires a ReportConfiguration instance')
     }
 
     this.config = config
+    this.progressCallback = options.progressCallback || null
     this.s3Service = new S3DataService()
     this.imageProcessor = new ImageProcessor()
     this.worksheetManager = new WorksheetManager(this.config)
     this.productsPopulator = new ProductsPopulator(this.config, this.imageProcessor, this.worksheetManager)
     this.scvHeadersGenerator = new ScvHeadersGenerator(this.config, this.worksheetManager)
+  }
+
+  async updateProgress(progress, stepName) {
+    if (this.progressCallback && typeof this.progressCallback === 'function') {
+      try {
+        await this.progressCallback(progress, stepName)
+      } catch (error) {
+        console.warn('Progress callback failed:', error.message)
+      }
+    }
   }
 
   async generateReport() {
@@ -685,6 +696,7 @@ class ExcelReportService {
           this.config.largeDataSet = true
         }
 
+        await this.updateProgress(15, 'initializing')
         console.log('🚀 Starting Excel report generation...')
         console.log(`📊 Project: ${this.config.idProject}`)
         console.log(`📈 Dataset mode: ${this.config.largeDataSet ? 'Large (optimized)' : 'Standard'}`)
@@ -692,6 +704,7 @@ class ExcelReportService {
         const locations = this.config.getS3Locations()
 
         // Fetch products data
+        await this.updateProgress(25, 'fetching-products')
         console.log('📦 Fetching products data from S3...')
         let products = await this.s3Service.getJsonFromS3(locations.products)
         console.log(`✅ Retrieved ${products.length} products`)
@@ -700,6 +713,7 @@ class ExcelReportService {
         this.config.autoConfigurePricing(products)
 
         // Fetch user data
+        await this.updateProgress(35, 'fetching-users')
         console.log('👥 Fetching user data from S3...')
         const users = await this.s3Service.getJsonFromS3(locations.scv)
         console.log(`✅ Retrieved data for ${users.length} users`)
@@ -711,13 +725,16 @@ class ExcelReportService {
         }
 
         // Generate Excel file
+        await this.updateProgress(50, 'generating-excel')
         const filePath = await this.generateExcelFile(products, users)
         const filename = path.basename(filePath)
 
         // Upload to S3
+        await this.updateProgress(85, 'uploading-to-s3')
         const s3Key = `report/output/${this.config.idProject}/${filename}`
         const signedUrl = await this.s3Service.uploadFileToS3(filePath, s3Key)
 
+        await this.updateProgress(95, 'finalizing')
         const endTime = new Date().getTime()
         const duration = (endTime - startTime) / 1000
 
@@ -726,6 +743,7 @@ class ExcelReportService {
         // Cleanup
         this.imageProcessor.cleanupTempImages()
 
+        await this.updateProgress(100, 'completed')
         return {
           success: true,
           filename,
@@ -1232,7 +1250,7 @@ class ExcelReportService {
 // Factory function
 function createExcelReportService(idProject, options = {}) {
   const config = new ReportConfiguration(idProject, options)
-  return new ExcelReportService(config)
+  return new ExcelReportService(config, options)
 }
 
 module.exports = {
