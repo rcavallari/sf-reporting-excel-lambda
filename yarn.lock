@@ -367,7 +367,7 @@
     "@smithy/util-waiter" "^4.0.5"
     tslib "^2.6.2"
 
-"@aws-sdk/client-lambda@^3.588.0", "@aws-sdk/client-lambda@^3.636.0":
+"@aws-sdk/client-lambda@^3.588.0", "@aws-sdk/client-lambda@^3.636.0", "@aws-sdk/client-lambda@^3.826.0":
   version "3.828.0"
   resolved "https://registry.yarnpkg.com/@aws-sdk/client-lambda/-/client-lambda-3.828.0.tgz#99b2522c450bd1f6e654bc14ccc88f1602fa4203"
   integrity sha512-iAOTfVUWz4ZeFoADr599PLmArM0xI25mzGeCbYugSErrVnlGs86Od17sOjitypGNOoSOcOTxBHTSV0+OsOFnsg==

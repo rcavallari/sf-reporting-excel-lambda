@@ -2,6 +2,7 @@ const { createExcelReportService } = require('../excel-service')
 const { validateInput, createResponse, createErrorResponse, generateJobId } = require('../utils/lambda-utils')
 const { DynamoJobService } = require('../services/dynamo-service')
 const { logger } = require('../utils/logger')
+const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda')
 
 /**
  * AWS Lambda handler for Excel report generation
@@ -14,7 +15,15 @@ exports.handler = async (event, context) => {
   logger.info('Lambda invocation started', { requestId, event })
 
   try {
-    // Parse request body
+    // Check if this is an async processing request
+    if (event.action === 'processReport') {
+      const { jobId, idProject, options } = event
+      logger.info('Processing async report request', { requestId, jobId, idProject })
+      await processReportAsync(jobId, idProject, options, requestId)
+      return { statusCode: 200, body: 'Async processing completed' }
+    }
+
+    // Parse request body for API Gateway requests
     let body
     if (typeof event.body === 'string') {
       try {
@@ -51,10 +60,30 @@ exports.handler = async (event, context) => {
     // Create job in DynamoDB
     await jobService.createJob(jobId, idProject, options)
     
-    // Start async processing (don't wait for completion)
-    processReportAsync(jobId, idProject, options, requestId).catch(error => {
-      logger.error('Async processing failed', { jobId, error: error.message })
-    })
+    // Start async processing via Lambda self-invocation
+    try {
+      const lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || 'us-west-2' })
+      const invokeParams = {
+        FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME,
+        InvocationType: 'Event', // Asynchronous invocation
+        Payload: JSON.stringify({
+          action: 'processReport',
+          jobId,
+          idProject,
+          options,
+          requestId
+        })
+      }
+      
+      await lambdaClient.send(new InvokeCommand(invokeParams))
+      logger.info('Async processing Lambda invoked', { jobId })
+    } catch (error) {
+      logger.error('Failed to invoke async processing Lambda', { jobId, error: error.message })
+      // Fall back to direct async processing
+      processReportAsync(jobId, idProject, options, requestId).catch(error => {
+        logger.error('Async processing failed', { jobId, error: error.message })
+      })
+    }
 
     // Return job ID immediately
     return createResponse(202, {

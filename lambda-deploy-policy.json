@@ -20,6 +20,13 @@
                 "dynamodb:Scan"
             ],
             "Resource": "arn:aws:dynamodb:us-west-2:830189347873:table/excel-report-jobs"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "lambda:InvokeFunction"
+            ],
+            "Resource": "arn:aws:lambda:us-west-2:830189347873:function:report-excel-lambda"
         }
     ]
 }
