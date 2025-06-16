@@ -224,6 +224,9 @@ exports.jobStatus = async (event, context) => {
       return createErrorResponse(404, 'Job not found')
     }
     
+    // Get progress logs for additional context
+    const progressLogs = await jobService.getJobProgressLogs(jobId)
+    
     return createResponse(200, {
       success: true,
       data: {
@@ -235,8 +238,26 @@ exports.jobStatus = async (event, context) => {
         updatedAt: job.updatedAt,
         completedAt: job.completedAt,
         metadata: job.metadata,
-        result: job.result,
-        error: job.error
+        result: job.result, // 🔥 Contains downloadUrl (presigned URL) and all statistics
+        error: job.error,
+        
+        // Additional useful information
+        progressHistory: progressLogs.map(log => ({
+          sequenceNumber: log.sequenceNumber,
+          progress: log.progress,
+          stepName: log.stepName,
+          timestamp: log.timestamp,
+          ...(log.imagesProcessed && { imagesProcessed: log.imagesProcessed }),
+          ...(log.totalImages && { totalImages: log.totalImages })
+        })),
+        
+        // Quick access to key information
+        ...(job.result && {
+          downloadUrl: job.result.downloadUrl, // 🔥 Direct access to presigned URL
+          processingTime: job.result.processingTimeFormatted,
+          imageStats: job.result.imageStats,
+          summary: job.result.summary
+        })
       }
     })
     
