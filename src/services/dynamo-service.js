@@ -1,5 +1,5 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb')
-const { DynamoDBDocumentClient, PutCommand, GetCommand, UpdateCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb')
+const { DynamoDBDocumentClient, PutCommand, GetCommand, UpdateCommand, QueryCommand, ScanCommand } = require('@aws-sdk/lib-dynamodb')
 const { logger } = require('../utils/logger')
 
 const TABLE_NAME = process.env.JOBS_TABLE || 'excel-report-jobs'
@@ -17,9 +17,13 @@ class DynamoJobService {
   async createJob(jobId, idProject, options = {}) {
     const now = new Date()
     const ttl = Math.floor((now.getTime() + (TTL_HOURS * 60 * 60 * 1000)) / 1000)
+    
+    // Generate unique recordId for primary key
+    const recordId = `job_${jobId}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`
 
     const jobRecord = {
-      jobId,
+      recordId, // Primary key
+      jobId, // Regular attribute for querying
       idProject,
       status: 'pending',
       progress: 0,
@@ -27,6 +31,7 @@ class DynamoJobService {
       updatedAt: now.toISOString(),
       ttl,
       options,
+      recordType: 'main_job',
       metadata: {
         totalSteps: 5, // estimation: validate, fetch data, process, generate excel, upload
         currentStep: 0,
@@ -40,7 +45,7 @@ class DynamoJobService {
         Item: jobRecord
       }))
       
-      logger.info('Job created in DynamoDB', { jobId, idProject })
+      logger.info('Job created in DynamoDB', { jobId, idProject, recordId })
       return jobRecord
     } catch (error) {
       logger.error('Failed to create job in DynamoDB', { jobId, error: error.message })
@@ -50,19 +55,40 @@ class DynamoJobService {
 
   async getJob(jobId) {
     try {
-      const result = await this.dynamoDb.send(new GetCommand({
+      // Query by jobId since it's no longer the primary key
+      const result = await this.dynamoDb.send(new QueryCommand({
         TableName: TABLE_NAME,
-        Key: { jobId }
+        IndexName: 'jobId-index', // We'll need a GSI for this
+        KeyConditionExpression: 'jobId = :jobId AND recordType = :recordType',
+        ExpressionAttributeValues: {
+          ':jobId': jobId,
+          ':recordType': 'main_job'
+        },
+        Limit: 1
       }))
 
-      if (!result.Item) {
+      if (!result.Items || result.Items.length === 0) {
         return null
       }
 
-      return result.Item
+      return result.Items[0]
     } catch (error) {
       logger.error('Failed to get job from DynamoDB', { jobId, error: error.message })
-      throw error
+      // Fallback: try scanning if GSI doesn't exist yet
+      try {
+        const scanResult = await this.dynamoDb.send(new ScanCommand({
+          TableName: TABLE_NAME,
+          FilterExpression: 'jobId = :jobId AND recordType = :recordType',
+          ExpressionAttributeValues: {
+            ':jobId': jobId,
+            ':recordType': 'main_job'
+          }
+        }))
+        return scanResult.Items?.[0] || null
+      } catch (scanError) {
+        logger.error('Fallback scan also failed', { jobId, error: scanError.message })
+        throw error
+      }
     }
   }
 
@@ -70,33 +96,36 @@ class DynamoJobService {
     const now = new Date().toISOString()
     
     try {
-      // Update main job record
-      const updateExpression = ['SET progress = :progress, updatedAt = :updatedAt']
-      const expressionAttributeValues = {
-        ':progress': Math.min(100, Math.max(0, progress)),
-        ':updatedAt': now
-      }
-
-      if (stepName) {
-        updateExpression.push('metadata.stepName = :stepName')
-        expressionAttributeValues[':stepName'] = stepName
-      }
-
-      // Add any additional data to the main job record
-      Object.entries(additionalData).forEach(([key, value], index) => {
-        if (key !== 'timestamp' && key !== 'progress' && key !== 'stepName') {
-          const attributeKey = `:extraData${index}`
-          updateExpression.push(`${key} = ${attributeKey}`)
-          expressionAttributeValues[attributeKey] = value
+      // Get the main job record first to update it
+      const job = await this.getJob(jobId)
+      if (job && job.recordId) {
+        const updateExpression = ['SET progress = :progress, updatedAt = :updatedAt']
+        const expressionAttributeValues = {
+          ':progress': Math.min(100, Math.max(0, progress)),
+          ':updatedAt': now
         }
-      })
 
-      await this.dynamoDb.send(new UpdateCommand({
-        TableName: TABLE_NAME,
-        Key: { jobId },
-        UpdateExpression: updateExpression.join(', '),
-        ExpressionAttributeValues: expressionAttributeValues
-      }))
+        if (stepName) {
+          updateExpression.push('metadata.stepName = :stepName')
+          expressionAttributeValues[':stepName'] = stepName
+        }
+
+        // Add any additional data to the main job record
+        Object.entries(additionalData).forEach(([key, value], index) => {
+          if (key !== 'timestamp' && key !== 'progress' && key !== 'stepName') {
+            const attributeKey = `:extraData${index}`
+            updateExpression.push(`${key} = ${attributeKey}`)
+            expressionAttributeValues[attributeKey] = value
+          }
+        })
+
+        await this.dynamoDb.send(new UpdateCommand({
+          TableName: TABLE_NAME,
+          Key: { recordId: job.recordId }, // Use recordId as primary key
+          UpdateExpression: updateExpression.join(', '),
+          ExpressionAttributeValues: expressionAttributeValues
+        }))
+      }
 
       // Get or initialize sequence number for this job
       if (!this.sequenceCounters.has(jobId)) {
@@ -127,8 +156,8 @@ class DynamoJobService {
       const ttl = Math.floor((Date.now() + (TTL_HOURS * 60 * 60 * 1000)) / 1000)
       
       const progressLogEntry = {
-        jobId: progressLogId, // Use progressLogId as the primary key
-        originalJobId: jobId, // Keep reference to the original job
+        recordId: progressLogId, // Use progressLogId as the primary key
+        jobId, // Keep reference to the original job
         sequenceNumber,
         timestamp,
         progress: Math.min(100, Math.max(0, progress)),
@@ -144,72 +173,77 @@ class DynamoJobService {
       }))
 
       logger.info('Progress log entry created', { 
-        progressLogId, 
+        recordId: progressLogId, 
         jobId, 
         progress, 
         stepName, 
         sequenceNumber,
         tableName: TABLE_NAME,
-        recordType: 'progress_log',
-        uniqueKey: progressLogId
+        recordType: 'progress_log'
       })
     } catch (error) {
-      logger.error('Failed to create progress log entry', { originalJobId: jobId, progress, sequenceNumber, error: error.message })
+      logger.error('Failed to create progress log entry', { jobId, progress, sequenceNumber, error: error.message })
       // Don't throw error - this is just logging
     }
   }
 
   async updateJobStatus(jobId, status, additionalData = {}) {
-    const updateExpression = ['SET #status = :status, updatedAt = :updatedAt']
-    const expressionAttributeNames = {
-      '#status': 'status'
-    }
-    const expressionAttributeValues = {
-      ':status': status,
-      ':updatedAt': new Date().toISOString()
-    }
-
-    // Add completion timestamp for finished jobs
-    if (status === 'completed' || status === 'failed') {
-      updateExpression.push('completedAt = :completedAt')
-      expressionAttributeValues[':completedAt'] = new Date().toISOString()
-    }
-
-    // Add any additional data to the update
-    Object.entries(additionalData).forEach(([key, value], index) => {
-      const attributeKey = `:data${index}`
-      
-      // Skip status since it's already handled above
-      if (key === 'status') {
-        return
-      }
-      
-      // Handle reserved keywords and nested objects
-      if (key === 'progress') {
-        updateExpression.push(`progress = ${attributeKey}`)
-      } else if (key === 'result') {
-        updateExpression.push(`#result = ${attributeKey}`)
-        expressionAttributeNames['#result'] = 'result'
-      } else if (key === 'error') {
-        updateExpression.push(`#error = ${attributeKey}`)
-        expressionAttributeNames['#error'] = 'error'
-      } else {
-        updateExpression.push(`${key} = ${attributeKey}`)
-      }
-      
-      expressionAttributeValues[attributeKey] = value
-    })
-
     try {
+      // Get the main job record first
+      const job = await this.getJob(jobId)
+      if (!job || !job.recordId) {
+        throw new Error(`Job not found: ${jobId}`)
+      }
+
+      const updateExpression = ['SET #status = :status, updatedAt = :updatedAt']
+      const expressionAttributeNames = {
+        '#status': 'status'
+      }
+      const expressionAttributeValues = {
+        ':status': status,
+        ':updatedAt': new Date().toISOString()
+      }
+
+      // Add completion timestamp for finished jobs
+      if (status === 'completed' || status === 'failed') {
+        updateExpression.push('completedAt = :completedAt')
+        expressionAttributeValues[':completedAt'] = new Date().toISOString()
+      }
+
+      // Add any additional data to the update
+      Object.entries(additionalData).forEach(([key, value], index) => {
+        const attributeKey = `:data${index}`
+        
+        // Skip status since it's already handled above
+        if (key === 'status') {
+          return
+        }
+        
+        // Handle reserved keywords and nested objects
+        if (key === 'progress') {
+          updateExpression.push(`progress = ${attributeKey}`)
+        } else if (key === 'result') {
+          updateExpression.push(`#result = ${attributeKey}`)
+          expressionAttributeNames['#result'] = 'result'
+        } else if (key === 'error') {
+          updateExpression.push(`#error = ${attributeKey}`)
+          expressionAttributeNames['#error'] = 'error'
+        } else {
+          updateExpression.push(`${key} = ${attributeKey}`)
+        }
+        
+        expressionAttributeValues[attributeKey] = value
+      })
+
       await this.dynamoDb.send(new UpdateCommand({
         TableName: TABLE_NAME,
-        Key: { jobId },
+        Key: { recordId: job.recordId }, // Use recordId as primary key
         UpdateExpression: updateExpression.join(', '),
         ExpressionAttributeNames: expressionAttributeNames,
         ExpressionAttributeValues: expressionAttributeValues
       }))
 
-      logger.info('Job status updated', { jobId, status })
+      logger.info('Job status updated', { jobId, status, recordId: job.recordId })
     } catch (error) {
       logger.error('Failed to update job status', { jobId, status, error: error.message })
       throw error
@@ -314,10 +348,23 @@ class DynamoJobService {
 
   async getJobProgressLogs(jobId) {
     try {
-      // For now, return empty array since we need to set up GSI
-      // The main job record will have the current progress
-      logger.info('Progress logs query skipped - requires GSI setup', { jobId })
-      return []
+      // Scan for progress logs for this job
+      const result = await this.dynamoDb.send(new ScanCommand({
+        TableName: TABLE_NAME,
+        FilterExpression: 'jobId = :jobId AND recordType = :recordType',
+        ExpressionAttributeValues: {
+          ':jobId': jobId,
+          ':recordType': 'progress_log'
+        }
+      }))
+      
+      // Sort by sequence number
+      const progressLogs = (result.Items || []).sort((a, b) => {
+        return (a.sequenceNumber || 0) - (b.sequenceNumber || 0)
+      })
+      
+      logger.info('Retrieved progress logs', { jobId, count: progressLogs.length })
+      return progressLogs
     } catch (error) {
       logger.error('Failed to get progress logs', { jobId, error: error.message })
       return []
