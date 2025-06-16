@@ -167,11 +167,14 @@ async function processReportAsync(jobId, idProject, options, requestId) {
     logger.info('Starting async report processing', { jobId, idProject })
     
     // Initialize sequence counter and update job status to processing
-    await jobService.updateJobProgress(jobId, 10, 'starting')
+    await jobService.updateJobProgress(jobId, 10, 'starting', { idProject })
     
     // Create progress callback for the report service
-    const progressCallback = async (progress, stepName) => {
-      await jobService.updateJobProgress(jobId, progress, stepName)
+    const progressCallback = async (progress, stepName, additionalData = {}) => {
+      await jobService.updateJobProgress(jobId, progress, stepName, {
+        ...additionalData,
+        idProject // Include idProject in all progress updates
+      })
     }
     
     // Create service instance with progress callback
@@ -183,7 +186,7 @@ async function processReportAsync(jobId, idProject, options, requestId) {
     const processingTime = Date.now() - startTime
     
     // Complete the job
-    await jobService.completeJob(jobId, { ...result, processingTime })
+    await jobService.completeJob(jobId, { ...result, processingTime, idProject })
     
     logger.info('Async report processing completed', {
       jobId,

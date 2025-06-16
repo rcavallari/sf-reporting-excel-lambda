@@ -110,9 +110,9 @@ class DynamoJobService {
       // Get the main job record first to update it
       const job = await this.getJob(jobId)
       if (job && job.recordId) {
-        const updateExpression = ['SET progress = :progress, updatedAt = :updatedAt, #timestamp = :timestamp']
+        const updateExpression = ['SET progress = :progress, updatedAt = :updatedAt, #ts = :timestamp']
         const expressionAttributeNames = {
-          '#timestamp': 'timestamp'
+          '#ts': 'timestamp'
         }
         const expressionAttributeValues = {
           ':progress': Math.min(100, Math.max(0, progress)),
@@ -334,7 +334,8 @@ class DynamoJobService {
       await this.updateJobStatus(jobId, 'completed', {
         ...completionData,
         stepName: 'completed', // Keep stepName consistent
-        timestamp: now // Update timestamp
+        timestamp: now, // Update timestamp
+        idProject: result.idProject || 'unknown' // Ensure idProject is included
       })
       
       // Get final sequence number
@@ -347,7 +348,12 @@ class DynamoJobService {
 
       // Create final completion progress log with all essential info
       await this.createProgressLogEntry(jobId, 100, 'completed', {
-        // File information
+        // Essential properties that should be in all records
+        idProject: result.idProject,
+        status: 'completed',
+        success: true,
+        
+        // File information - 🔥 MOST IMPORTANT!
         filename: result.filename,
         s3Key: result.s3Key,
         downloadUrl: result.signedUrl, // 🔥 PRESIGNED URL
@@ -363,7 +369,6 @@ class DynamoJobService {
         summary: completionData.result.summary,
         
         // Status
-        success: true,
         message: `Report generation completed successfully in ${this.formatProcessingTime(result.processingTime)}`,
         
         // Failure details (if any)
