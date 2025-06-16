@@ -100,7 +100,10 @@ class DynamoJobService {
   }
 
   async updateJobStatus(jobId, status, additionalData = {}) {
-    const updateExpression = ['SET status = :status, updatedAt = :updatedAt']
+    const updateExpression = ['SET #status = :status, updatedAt = :updatedAt']
+    const expressionAttributeNames = {
+      '#status': 'status'
+    }
     const expressionAttributeValues = {
       ':status': status,
       ':updatedAt': new Date().toISOString()
@@ -124,6 +127,7 @@ class DynamoJobService {
         TableName: TABLE_NAME,
         Key: { jobId },
         UpdateExpression: updateExpression.join(', '),
+        ExpressionAttributeNames: expressionAttributeNames,
         ExpressionAttributeValues: expressionAttributeValues
       }))
 
