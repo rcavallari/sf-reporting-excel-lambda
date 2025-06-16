@@ -110,7 +110,10 @@ class DynamoJobService {
 
   async createProgressLogEntry(jobId, progress, stepName, additionalData = {}, timestamp) {
     try {
-      const progressLogId = `${jobId}_${timestamp.replace(/[:.]/g, '_')}`
+      // Create unique primary key with milliseconds and random suffix to avoid collisions
+      const cleanTimestamp = timestamp.replace(/[:.]/g, '_')
+      const randomSuffix = Math.random().toString(36).substring(2, 6)
+      const progressLogId = `${jobId}_${cleanTimestamp}_${randomSuffix}`
       const ttl = Math.floor((Date.now() + (TTL_HOURS * 60 * 60 * 1000)) / 1000)
       
       const progressLogEntry = {
@@ -218,6 +221,7 @@ class DynamoJobService {
         downloadUrl: result.signedUrl,
         processingTime: result.processingTime,
         stats: result.stats,
+        imageStats: result.imageStats || { successful: 0, failed: 0, failedIds: [] },
         success: true,
         message: 'Report generation completed successfully'
       }, now)

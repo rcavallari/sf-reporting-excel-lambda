@@ -6,7 +6,8 @@
       "Bash(yarn install)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(aws dynamodb get-item:*)"
+      "Bash(aws dynamodb get-item:*)",
+      "Bash(rg:*)"
     ],
     "deny": []
   }

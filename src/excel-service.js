@@ -438,10 +438,18 @@ class ProductsPopulator {
     this.config = config
     this.imageProcessor = imageProcessor
     this.worksheetManager = worksheetManager
+    this.imageStats = {
+      successful: 0,
+      failed: 0,
+      failedIds: []
+    }
   }
 
-  async populate(products, worksheet) {
+  async populate(products, worksheet, progressCallback = null) {
     console.log('Starting to populate products worksheet...')
+    const totalProducts = products.length
+    let processedImages = 0
+    
     const namesArray = products.map((product) => product.description.length)
     const namesMaxLength = Math.max(...namesArray)
     worksheet.column(5).setWidth(namesMaxLength)
@@ -522,11 +530,28 @@ class ProductsPopulator {
                   },
                 },
               })
+              this.imageStats.successful++
             } else {
               console.log(`No image available for product ${product.idProduct}`)
+              this.imageStats.failed++
+              this.imageStats.failedIds.push(product.idProduct)
             }
           } catch (error) {
             console.error(`Error processing image for product ${product.idProduct}:`, error.message)
+            this.imageStats.failed++
+            this.imageStats.failedIds.push(product.idProduct)
+          }
+
+          // Update progress for image downloads (50% to 80% of total progress)
+          processedImages++
+          if (progressCallback && processedImages % 10 === 0) { // Update every 10 images to avoid too many DynamoDB calls
+            const imageProgress = 50 + Math.floor((processedImages / totalProducts) * 30) // 50% to 80%
+            await progressCallback(imageProgress, 'downloading-images', {
+              imagesProcessed: processedImages,
+              totalImages: totalProducts,
+              successful: this.imageStats.successful,
+              failed: this.imageStats.failed
+            })
           }
         } else if (column === 2) {
           let val = product[property].split(',')
@@ -542,6 +567,14 @@ class ProductsPopulator {
     const idProductsMaxLength = Math.max(...idProductsArray)
     worksheet.column(3).setWidth(idProductsMaxLength + 4)
     worksheet.row(1).filter()
+    
+    console.log('Products worksheet populated successfully')
+    console.log(`Image statistics: ${this.imageStats.successful} successful, ${this.imageStats.failed} failed`)
+    if (this.imageStats.failed > 0) {
+      console.log(`Failed image IDs: ${this.imageStats.failedIds.join(', ')}`)
+    }
+    
+    return this.imageStats
   }
 }
 
@@ -724,12 +757,14 @@ class ExcelReportService {
           this.resetForRetry()
         }
 
-        // Generate Excel file
+        // Generate Excel file (progress updates happen inside via image downloads)
         await this.updateProgress(50, 'generating-excel')
-        const filePath = await this.generateExcelFile(products, users)
+        const result = await this.generateExcelFile(products, users)
+        const filePath = result.filePath
+        const imageStats = result.imageStats
         const filename = path.basename(filePath)
 
-        // Upload to S3
+        // Upload to S3  
         await this.updateProgress(85, 'uploading-to-s3')
         const s3Key = `report/output/${this.config.idProject}/${filename}`
         const signedUrl = await this.s3Service.uploadFileToS3(filePath, s3Key)
@@ -750,6 +785,7 @@ class ExcelReportService {
           s3Key,
           signedUrl,
           duration,
+          imageStats,
           stats: {
             products: products.length,
             users: users.length,
@@ -790,8 +826,7 @@ class ExcelReportService {
 
     // Populate products worksheet
     console.log('Populating products worksheet...')
-    await this.productsPopulator.populate(products, this.worksheetManager.worksheets.products)
-    console.log('Products worksheet populated successfully')
+    const imageStats = await this.productsPopulator.populate(products, this.worksheetManager.worksheets.products, this.updateProgress.bind(this))
 
     // Generate SCV headers and assign values
     console.log('Generating SCV headers...')
@@ -822,7 +857,7 @@ class ExcelReportService {
     // Write file
     await this.worksheetManager.writeFile(filePath)
 
-    return filePath
+    return { filePath, imageStats }
   }
 
   preprocessProducts(products) {
