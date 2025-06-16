@@ -2,6 +2,7 @@ const { createExcelReportService } = require('../excel-service')
 const { validateInput, createResponse, createErrorResponse, generateJobId } = require('../utils/lambda-utils')
 const { DynamoJobService } = require('../services/dynamo-service')
 const { logger } = require('../utils/logger')
+const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda')
 
 /**
  * AWS Lambda handler for Excel report generation
@@ -12,7 +13,15 @@ exports.handler = async (event, context) => {
   logger.info('Lambda invocation started', { requestId, event })
 
   try {
-    // Parse request body
+    // Check if this is an async processing request (Lambda self-invocation)
+    if (event.action === 'processReport') {
+      const { jobId, idProject, options } = event
+      logger.info('Processing async report request', { requestId, jobId, idProject })
+      await processReportAsync(jobId, idProject, options, requestId)
+      return { statusCode: 200, body: 'Async processing completed' }
+    }
+
+    // Parse request body for API Gateway requests
     let body
     if (typeof event.body === 'string') {
       try {
@@ -49,11 +58,40 @@ exports.handler = async (event, context) => {
     // Create job in DynamoDB
     await jobService.createJob(jobId, idProject, options)
     
-    // Start async processing - frontend will poll for results
-    // Don't await - let it run in background while we return job ID immediately
-    processReportAsync(jobId, idProject, options, requestId).catch(error => {
-      logger.error('Async processing failed', { jobId, requestId, error: error.message, stack: error.stack })
-    })
+    // Start async processing via Lambda self-invocation
+    try {
+      const lambdaClient = new LambdaClient({ region: process.env.AWS_REGION || 'us-west-2' })
+      const invokeParams = {
+        FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME,
+        InvocationType: 'Event', // Asynchronous invocation
+        Payload: JSON.stringify({
+          action: 'processReport',
+          jobId,
+          idProject,
+          options,
+          requestId
+        })
+      }
+      
+      await lambdaClient.send(new InvokeCommand(invokeParams))
+      logger.info('Async processing Lambda invoked successfully', { jobId })
+      
+    } catch (error) {
+      logger.error('Failed to invoke async processing Lambda', { jobId, error: error.message })
+      // Mark job as failed since we couldn't start async processing
+      try {
+        await jobService.failJob(jobId, new Error(`Failed to start async processing: ${error.message}`))
+      } catch (updateError) {
+        logger.error('Failed to update job failure status', { jobId, updateError: updateError.message })
+      }
+      
+      return createErrorResponse(500, 'Failed to start report generation', {
+        jobId,
+        error: error.message,
+        requestId,
+        timestamp: new Date().toISOString()
+      })
+    }
 
     // ALWAYS return job ID immediately - frontend polls DynamoDB for progress/results
     return createResponse(202, {
