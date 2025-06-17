@@ -64,33 +64,22 @@ async function cleanDynamoTable() {
       TableName: TABLE_NAME,
       KeySchema: [
         {
+          AttributeName: 'jobId',
+          KeyType: 'HASH' // Partition key
+        },
+        {
           AttributeName: 'recordId',
-          KeyType: 'HASH' // Primary key
+          KeyType: 'RANGE' // Sort key
         }
       ],
       AttributeDefinitions: [
         {
-          AttributeName: 'recordId',
+          AttributeName: 'jobId',
           AttributeType: 'S'
         },
         {
-          AttributeName: 'jobId',
+          AttributeName: 'recordId',
           AttributeType: 'S'
-        }
-      ],
-      GlobalSecondaryIndexes: [
-        {
-          IndexName: 'jobId-index',
-          KeySchema: [
-            {
-              AttributeName: 'jobId',
-              KeyType: 'HASH'
-            }
-          ],
-          Projection: {
-            ProjectionType: 'ALL'
-          },
-          BillingMode: 'PAY_PER_REQUEST'
         }
       ],
       BillingMode: 'PAY_PER_REQUEST', // On-demand pricing
@@ -133,10 +122,10 @@ async function cleanDynamoTable() {
     console.log('🎉 DynamoDB table cleanup and recreation completed successfully!')
     console.log('')
     console.log('📊 New table structure:')
-    console.log('   • Primary Key: recordId (string)')
-    console.log('   • Global Secondary Index: jobId-index')
+    console.log('   • Partition Key: jobId (string)')
+    console.log('   • Sort Key: recordId (string)')
     console.log('   • Billing Mode: Pay per request')
-    console.log('   • Optimized schema with details JSON field')
+    console.log('   • Optimized for Query operations by jobId')
     console.log('')
     console.log('✨ Ready for the new cleaner record structure!')
 
