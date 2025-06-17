@@ -1,5 +1,5 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb')
-const { DynamoDBDocumentClient, PutCommand, GetCommand, UpdateCommand, QueryCommand, ScanCommand } = require('@aws-sdk/lib-dynamodb')
+const { DynamoDBDocumentClient, PutCommand, GetCommand, UpdateCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb')
 const { logger } = require('../utils/logger')
 
 const TABLE_NAME = process.env.JOBS_TABLE || 'excel-report-jobs'
@@ -62,28 +62,29 @@ class DynamoJobService {
 
   async getJob(jobId) {
     try {
-      // Scan for the main job record by jobId and recordType
-      const result = await this.dynamoDb.send(new ScanCommand({
+      // Query for the main job record by jobId and recordType
+      const result = await this.dynamoDb.send(new QueryCommand({
         TableName: TABLE_NAME,
-        FilterExpression: 'jobId = :jobId AND details.recordType = :recordType',
+        KeyConditionExpression: 'jobId = :jobId',
+        FilterExpression: 'details.recordType = :recordType',
         ExpressionAttributeValues: {
           ':jobId': jobId,
           ':recordType': 'main_job'
         }
       }))
 
-      logger.info('getJob scan result', { 
+      logger.info('getJob query result', { 
         jobId, 
         itemsFound: result.Items?.length || 0,
-        scannedCount: result.ScannedCount,
+        count: result.Count,
         items: result.Items?.map(item => ({ recordId: item.recordId, recordType: item.recordType }))
       })
 
       if (!result.Items || result.Items.length === 0) {
-        // Try a broader scan to see if any records exist for this jobId
-        const broadResult = await this.dynamoDb.send(new ScanCommand({
+        // Try a broader query to see if any records exist for this jobId
+        const broadResult = await this.dynamoDb.send(new QueryCommand({
           TableName: TABLE_NAME,
-          FilterExpression: 'jobId = :jobId',
+          KeyConditionExpression: 'jobId = :jobId',
           ExpressionAttributeValues: {
             ':jobId': jobId
           }
@@ -280,7 +281,10 @@ class DynamoJobService {
 
       await this.dynamoDb.send(new UpdateCommand({
         TableName: TABLE_NAME,
-        Key: { recordId: job.recordId },
+        Key: { 
+          jobId: jobId,
+          recordId: job.recordId 
+        },
         UpdateExpression: updateExpression.join(', '),
         ExpressionAttributeNames: expressionAttributeNames,
         ExpressionAttributeValues: expressionAttributeValues
@@ -604,10 +608,11 @@ class DynamoJobService {
 
   async getJobProgressLogs(jobId) {
     try {
-      // Scan for progress logs for this job
-      const result = await this.dynamoDb.send(new ScanCommand({
+      // Query for progress logs for this job
+      const result = await this.dynamoDb.send(new QueryCommand({
         TableName: TABLE_NAME,
-        FilterExpression: 'jobId = :jobId AND (details.recordType = :progressType OR details.recordType = :completionType)',
+        KeyConditionExpression: 'jobId = :jobId',
+        FilterExpression: 'details.recordType = :progressType OR details.recordType = :completionType',
         ExpressionAttributeValues: {
           ':jobId': jobId,
           ':progressType': 'progress_log',
@@ -631,9 +636,10 @@ class DynamoJobService {
   async getJobCompletionRecord(jobId) {
     try {
       // Get the completion record specifically (the one with progress=100 and downloadUrl)
-      const result = await this.dynamoDb.send(new ScanCommand({
+      const result = await this.dynamoDb.send(new QueryCommand({
         TableName: TABLE_NAME,
-        FilterExpression: 'jobId = :jobId AND details.recordType = :completionType AND progress = :progress',
+        KeyConditionExpression: 'jobId = :jobId',
+        FilterExpression: 'details.recordType = :completionType AND progress = :progress',
         ExpressionAttributeValues: {
           ':jobId': jobId,
           ':completionType': 'completion_log',
@@ -675,9 +681,9 @@ class DynamoJobService {
   async getAllJobRecords(jobId) {
     try {
       // Get all records for this job (main job + progress logs)
-      const result = await this.dynamoDb.send(new ScanCommand({
+      const result = await this.dynamoDb.send(new QueryCommand({
         TableName: TABLE_NAME,
-        FilterExpression: 'jobId = :jobId',
+        KeyConditionExpression: 'jobId = :jobId',
         ExpressionAttributeValues: {
           ':jobId': jobId
         }
