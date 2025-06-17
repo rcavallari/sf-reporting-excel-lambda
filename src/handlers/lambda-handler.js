@@ -230,6 +230,23 @@ exports.jobStatus = async (event, context) => {
     // Get progress logs for additional context
     const progressLogs = await jobService.getJobProgressLogs(jobId)
     
+    // Get completion record if job is completed (this has the final downloadUrl)
+    let completionData = null
+    if (job.status === 'completed') {
+      const completionRecord = await jobService.getJobCompletionRecord(jobId)
+      if (completionRecord) {
+        completionData = {
+          downloadUrl: completionRecord.details?.downloadUrl,
+          processingTime: completionRecord.details?.processingTimeFormatted,
+          imageStats: completionRecord.details?.imageStats,
+          summary: completionRecord.details?.summary,
+          filename: completionRecord.details?.filename,
+          s3Key: completionRecord.details?.s3Key,
+          processingSpeed: completionRecord.details?.processingSpeed
+        }
+      }
+    }
+    
     return createResponse(200, {
       success: true,
       data: {
@@ -254,12 +271,16 @@ exports.jobStatus = async (event, context) => {
           ...(log.details?.totalImages && { totalImages: log.details.totalImages })
         })),
         
-        // Quick access to key information
-        ...(job.details?.result && {
-          downloadUrl: job.details.result.downloadUrl, // 🔥 Direct access to presigned URL
-          processingTime: job.details.result.processingTimeFormatted,
-          imageStats: job.details.result.imageStats,
-          summary: job.details.result.summary
+        // 🔥 FINAL COMPLETION DATA - Use this for completed jobs!
+        ...(completionData && {
+          downloadUrl: completionData.downloadUrl, // 🔥 PRESIGNED URL from completion record
+          processingTime: completionData.processingTime,
+          imageStats: completionData.imageStats,
+          summary: completionData.summary,
+          filename: completionData.filename,
+          s3Key: completionData.s3Key,
+          processingSpeed: completionData.processingSpeed,
+          isCompleted: true // Flag to indicate this has final data
         })
       }
     })

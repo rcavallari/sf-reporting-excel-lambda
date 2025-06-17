@@ -348,9 +348,10 @@ class DynamoJobService {
     }
 
     try {
-      // Update main job record with comprehensive completion data
+      // Update main job record with completion data (but keep progress at 99%)
       await this.updateJobStatus(jobId, 'completed', {
-        ...completionData,
+        result: completionData.result, // Store result data
+        progress: 99, // Main job stays at 99% - only completion log gets 100%
         stepName: 'completed', // Keep stepName consistent
         timestamp: now, // Update timestamp
         idProject: result.idProject || 'unknown' // Ensure idProject is included
@@ -624,6 +625,33 @@ class DynamoJobService {
     } catch (error) {
       logger.error('Failed to get progress logs', { jobId, error: error.message })
       return []
+    }
+  }
+
+  async getJobCompletionRecord(jobId) {
+    try {
+      // Get the completion record specifically (the one with progress=100 and downloadUrl)
+      const result = await this.dynamoDb.send(new ScanCommand({
+        TableName: TABLE_NAME,
+        FilterExpression: 'jobId = :jobId AND details.recordType = :completionType AND progress = :progress',
+        ExpressionAttributeValues: {
+          ':jobId': jobId,
+          ':completionType': 'completion_log',
+          ':progress': 100
+        }
+      }))
+      
+      const completionRecord = result.Items?.[0]
+      logger.info('Retrieved completion record', { 
+        jobId, 
+        found: !!completionRecord,
+        hasDownloadUrl: !!completionRecord?.details?.downloadUrl 
+      })
+      
+      return completionRecord
+    } catch (error) {
+      logger.error('Failed to get completion record', { jobId, error: error.message })
+      return null
     }
   }
 
