@@ -26,21 +26,23 @@ class DynamoJobService {
     const jobRecord = {
       recordId, // Primary key - unique for each record
       jobId, // Regular attribute for filtering
-      idProject,
-      status: 'pending',
+      timestamp: now.toISOString(),
+      stepName: 'initializing',
       progress: 0,
-      stepName: 'initializing', // Consistent with progress logs
-      recordType: 'main_job',
-      sequenceNumber: 0, // Main job is sequence 0
-      timestamp: now.toISOString(), // Consistent with progress logs
-      createdAt: now.toISOString(),
-      updatedAt: now.toISOString(),
-      ttl,
-      options,
-      metadata: {
-        totalSteps: 5, // estimation: validate, fetch data, process, generate excel, upload
-        currentStep: 0,
-        stepName: 'initializing'
+      status: 'pending',
+      details: {
+        idProject,
+        recordType: 'main_job',
+        sequenceNumber: 0,
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+        ttl,
+        options,
+        metadata: {
+          totalSteps: 5, // estimation: validate, fetch data, process, generate excel, upload
+          currentStep: 0,
+          stepName: 'initializing'
+        }
       }
     }
 
@@ -63,7 +65,7 @@ class DynamoJobService {
       // Scan for the main job record by jobId and recordType
       const result = await this.dynamoDb.send(new ScanCommand({
         TableName: TABLE_NAME,
-        FilterExpression: 'jobId = :jobId AND recordType = :recordType',
+        FilterExpression: 'jobId = :jobId AND details.recordType = :recordType',
         ExpressionAttributeValues: {
           ':jobId': jobId,
           ':recordType': 'main_job'
@@ -90,7 +92,7 @@ class DynamoJobService {
         logger.warn('Main job not found, but found other records', {
           jobId,
           allRecordsFound: broadResult.Items?.length || 0,
-          recordTypes: broadResult.Items?.map(item => item.recordType)
+          recordTypes: broadResult.Items?.map(item => item.details?.recordType || 'unknown')
         })
         
         return null
@@ -107,37 +109,41 @@ class DynamoJobService {
     const now = new Date().toISOString()
     
     try {
-      // Get the main job record first to update it
+      // Get the main job record first to update it (but don't set progress to 100 until completion)
       const job = await this.getJob(jobId)
       if (job && job.recordId) {
-        const updateExpression = ['SET progress = :progress, updatedAt = :updatedAt, #ts = :timestamp']
+        const updateExpression = ['SET details.updatedAt = :updatedAt, #ts = :timestamp']
         const expressionAttributeNames = {
           '#ts': 'timestamp'
         }
         const expressionAttributeValues = {
-          ':progress': Math.min(100, Math.max(0, progress)),
           ':updatedAt': now,
           ':timestamp': now
         }
 
-        if (stepName) {
-          updateExpression.push('metadata.stepName = :stepName, stepName = :stepNameTop')
-          expressionAttributeValues[':stepName'] = stepName
-          expressionAttributeValues[':stepNameTop'] = stepName
+        // Only update progress if it's not 100 (completion progress is handled separately)
+        if (progress < 100) {
+          updateExpression.push('progress = :progress')
+          expressionAttributeValues[':progress'] = Math.min(99, Math.max(0, progress))
         }
 
-        // Add any additional data to the main job record
+        if (stepName) {
+          updateExpression.push('stepName = :stepName, details.metadata.stepName = :stepName')
+          expressionAttributeValues[':stepName'] = stepName
+        }
+
+        // Add any additional data to the details object
         Object.entries(additionalData).forEach(([key, value], index) => {
           if (key !== 'timestamp' && key !== 'progress' && key !== 'stepName') {
             const attributeKey = `:extraData${index}`
-            updateExpression.push(`${key} = ${attributeKey}`)
+            updateExpression.push(`details.${key} = ${attributeKey}`)
             expressionAttributeValues[attributeKey] = value
           }
         })
 
         await this.dynamoDb.send(new UpdateCommand({
           TableName: TABLE_NAME,
-          Key: { recordId: job.recordId }, // Use recordId as primary key
+          Key: { recordId: job.recordId },
           UpdateExpression: updateExpression.join(', '),
           ExpressionAttributeNames: expressionAttributeNames,
           ExpressionAttributeValues: expressionAttributeValues
@@ -154,8 +160,9 @@ class DynamoJobService {
 
       logger.info('Job progress updated', { jobId, progress, stepName, sequenceNumber, timestamp: now })
 
-      // Create separate progress log entry with sequence number
-      await this.createProgressLogEntry(jobId, progress, stepName, additionalData, now, sequenceNumber)
+      // Create separate progress log entry with sequence number (but don't allow progress 100 here)
+      const logProgress = progress >= 100 ? 99 : progress
+      await this.createProgressLogEntry(jobId, logProgress, stepName, additionalData, now, sequenceNumber)
       
     } catch (error) {
       logger.error('Failed to update job progress', { jobId, progress, error: error.message })
@@ -175,19 +182,22 @@ class DynamoJobService {
       const progressLogEntry = {
         recordId: progressLogId, // Primary key - unique for each record
         jobId, // Regular attribute for filtering
-        sequenceNumber,
         timestamp,
-        progress: Math.min(100, Math.max(0, progress)),
         stepName: stepName || 'unknown',
-        recordType: 'progress_log',
-        ttl,
-        ...additionalData
+        progress: Math.min(99, Math.max(0, progress)), // Never allow 100 here - only in completion
+        status: 'processing',
+        details: {
+          sequenceNumber,
+          recordType: 'progress_log',
+          ttl,
+          ...additionalData
+        }
       }
       
       // Remove undefined values to keep DynamoDB clean
-      Object.keys(progressLogEntry).forEach(key => {
-        if (progressLogEntry[key] === undefined) {
-          delete progressLogEntry[key]
+      Object.keys(progressLogEntry.details).forEach(key => {
+        if (progressLogEntry.details[key] === undefined) {
+          delete progressLogEntry.details[key]
         }
       })
 
@@ -224,7 +234,7 @@ class DynamoJobService {
         throw new Error(`Job not found: ${jobId}`)
       }
 
-      const updateExpression = ['SET #status = :status, updatedAt = :updatedAt']
+      const updateExpression = ['SET #status = :status, details.updatedAt = :updatedAt']
       const expressionAttributeNames = {
         '#status': 'status'
       }
@@ -235,11 +245,11 @@ class DynamoJobService {
 
       // Add completion timestamp for finished jobs
       if (status === 'completed' || status === 'failed') {
-        updateExpression.push('completedAt = :completedAt')
+        updateExpression.push('details.completedAt = :completedAt')
         expressionAttributeValues[':completedAt'] = new Date().toISOString()
       }
 
-      // Add any additional data to the update
+      // Add any additional data to the details object
       Object.entries(additionalData).forEach(([key, value], index) => {
         const attributeKey = `:data${index}`
         
@@ -248,22 +258,17 @@ class DynamoJobService {
           return
         }
         
-        // Handle reserved keywords and nested objects
+        // Handle core fields vs details fields
         if (key === 'progress') {
           updateExpression.push(`progress = ${attributeKey}`)
-        } else if (key === 'result') {
-          updateExpression.push(`#result = ${attributeKey}`)
-          expressionAttributeNames['#result'] = 'result'
-        } else if (key === 'error') {
-          updateExpression.push(`#error = ${attributeKey}`)
-          expressionAttributeNames['#error'] = 'error'
         } else if (key === 'timestamp') {
           updateExpression.push(`#ts = ${attributeKey}`)
           expressionAttributeNames['#ts'] = 'timestamp'
         } else if (key === 'stepName') {
           updateExpression.push(`stepName = ${attributeKey}`)
         } else {
-          updateExpression.push(`${key} = ${attributeKey}`)
+          // Everything else goes into details
+          updateExpression.push(`details.${key} = ${attributeKey}`)
         }
         
         expressionAttributeValues[attributeKey] = value
@@ -271,7 +276,7 @@ class DynamoJobService {
 
       await this.dynamoDb.send(new UpdateCommand({
         TableName: TABLE_NAME,
-        Key: { recordId: job.recordId }, // Use recordId as primary key
+        Key: { recordId: job.recordId },
         UpdateExpression: updateExpression.join(', '),
         ExpressionAttributeNames: expressionAttributeNames,
         ExpressionAttributeValues: expressionAttributeValues
@@ -293,7 +298,11 @@ class DynamoJobService {
     // Calculate additional useful statistics
     const totalImages = imageStats.successful + imageStats.failed
     const imageSuccessRate = totalImages > 0 ? ((imageStats.successful / totalImages) * 100).toFixed(1) : '0.0'
-    const processingSpeed = result.processingTime > 0 ? ((result.stats?.totalProducts || 0) / (result.processingTime / 1000)).toFixed(2) : '0.00'
+    
+    // Fix processingSpeed calculation - ensure we have valid numbers
+    const totalProducts = result.stats?.totalProducts || 0
+    const processingTimeSeconds = result.processingTime > 0 ? (result.processingTime / 1000) : 1 // Avoid division by zero
+    const processingSpeed = totalProducts > 0 && processingTimeSeconds > 0 ? (totalProducts / processingTimeSeconds).toFixed(2) : '0.00'
     
     const completionData = {
       status: 'completed',
@@ -324,7 +333,7 @@ class DynamoJobService {
         
         // Summary
         summary: {
-          totalProducts: result.stats?.totalProducts || 0,
+          totalProducts: totalProducts,
           totalImages: totalImages,
           imagesSuccessful: imageStats.successful,
           imagesFailed: imageStats.failed,
@@ -351,40 +360,8 @@ class DynamoJobService {
       }
       const finalSequenceNumber = this.sequenceCounters.get(jobId)
 
-      // Create final completion progress log with all essential info
-      await this.createProgressLogEntry(jobId, 100, 'completed', {
-        // Essential properties that should be in all records
-        idProject: result.idProject,
-        status: 'completed',
-        success: true,
-        
-        // File information - 🔥 MOST IMPORTANT!
-        filename: result.filename,
-        s3Key: result.s3Key,
-        downloadUrl: result.signedUrl, // 🔥 PRESIGNED URL
-        
-        // Processing metrics
-        processingTime: result.processingTime,
-        processingTimeFormatted: this.formatProcessingTime(result.processingTime),
-        processingSpeed: `${processingSpeed} products/second`,
-        
-        // Statistics
-        stats: result.stats,
-        imageStats: completionData.result.imageStats,
-        summary: completionData.result.summary,
-        
-        // Status
-        message: `Report generation completed successfully in ${this.formatProcessingTime(result.processingTime)}`,
-        
-        // Failure details (if any)
-        ...(imageStats.failed > 0 && {
-          imageFailures: {
-            count: imageStats.failed,
-            failedProductIds: imageStats.failedIds,
-            affectedPercentage: `${((imageStats.failed / totalImages) * 100).toFixed(1)}%`
-          }
-        })
-      }, now, finalSequenceNumber)
+      // Create final completion progress log with all essential info (ONLY this one gets progress=100)
+      await this.createCompletionLogEntry(jobId, result, completionData, now, finalSequenceNumber)
       
       logger.info('Job completed successfully', { 
         jobId, 
@@ -402,6 +379,83 @@ class DynamoJobService {
     } catch (error) {
       logger.error('Failed to complete job', { jobId, error: error.message })
       throw error
+    }
+  }
+
+  async createCompletionLogEntry(jobId, result, completionData, timestamp, sequenceNumber) {
+    try {
+      // Create unique primary key for completion record
+      const cleanTimestamp = timestamp.replace(/[:.]/g, '_')
+      const paddedSequence = sequenceNumber.toString().padStart(3, '0')
+      const randomSuffix = Math.random().toString(36).substring(2, 4)
+      const completionLogId = `${jobId}_seq${paddedSequence}_${cleanTimestamp}_${randomSuffix}`
+      const ttl = Math.floor((Date.now() + (TTL_HOURS * 60 * 60 * 1000)) / 1000)
+      
+      // Calculate final processing speed with proper values
+      const totalProducts = result.stats?.totalProducts || 0
+      const processingTimeSeconds = result.processingTime > 0 ? (result.processingTime / 1000) : 1
+      const processingSpeed = totalProducts > 0 && processingTimeSeconds > 0 ? (totalProducts / processingTimeSeconds).toFixed(2) : '0.00'
+      
+      const completionLogEntry = {
+        recordId: completionLogId,
+        jobId,
+        timestamp,
+        stepName: 'completed',
+        progress: 100, // ONLY completion record gets 100%
+        status: 'completed',
+        details: {
+          sequenceNumber,
+          recordType: 'completion_log',
+          ttl,
+          idProject: result.idProject,
+          success: true,
+          
+          // File information - 🔥 MOST IMPORTANT!
+          filename: result.filename,
+          s3Key: result.s3Key,
+          downloadUrl: result.signedUrl, // 🔥 PRESIGNED URL
+          
+          // Processing metrics with fixed calculation
+          processingTime: result.processingTime,
+          processingTimeFormatted: this.formatProcessingTime(result.processingTime),
+          processingSpeed: `${processingSpeed} products/second`,
+          
+          // Statistics
+          stats: result.stats,
+          imageStats: completionData.result.imageStats,
+          summary: completionData.result.summary,
+          
+          // Status message
+          message: `Report generation completed successfully in ${this.formatProcessingTime(result.processingTime)}`,
+          
+          // Failure details (if any)
+          ...(completionData.result.imageStats.failed > 0 && {
+            imageFailures: {
+              count: completionData.result.imageStats.failed,
+              failedProductIds: completionData.result.imageStats.failedIds,
+              affectedPercentage: `${((completionData.result.imageStats.failed / completionData.result.imageStats.total) * 100).toFixed(1)}%`
+            }
+          })
+        }
+      }
+
+      await this.dynamoDb.send(new PutCommand({
+        TableName: TABLE_NAME,
+        Item: completionLogEntry
+      }))
+
+      logger.info('Completion log entry created', { 
+        recordId: completionLogId, 
+        jobId, 
+        progress: 100,
+        stepName: 'completed',
+        sequenceNumber,
+        downloadUrl: result.signedUrl,
+        processingSpeed: `${processingSpeed} products/second`
+      })
+    } catch (error) {
+      logger.error('Failed to create completion log entry', { jobId, sequenceNumber, error: error.message })
+      // Don't throw error - this is just logging
     }
   }
 
@@ -472,26 +526,7 @@ class DynamoJobService {
       const failureSequenceNumber = this.sequenceCounters.get(jobId)
 
       // Create final failure progress log with error details
-      await this.createProgressLogEntry(jobId, progress || 0, 'failed', {
-        success: false,
-        error: {
-          message: error.message,
-          type: error.constructor.name,
-          code: error.Code || error.name,
-          stack: error.stack,
-          // Add specific S3 error details if available
-          ...(error.Code === 'NoSuchKey' && {
-            s3Error: {
-              missingKey: error.Key,
-              bucket: error.Bucket,
-              suggestion: 'Check if the input file exists in S3'
-            }
-          })
-        },
-        message: `Report generation failed: ${error.message}`,
-        // Add failure category for easier debugging
-        failureCategory: this.categorizeError(error)
-      }, now, failureSequenceNumber)
+      await this.createFailureLogEntry(jobId, error, progress || 0, now, failureSequenceNumber)
       
       logger.error('Job failed', { jobId, error: error.message })
       
@@ -503,21 +538,81 @@ class DynamoJobService {
     }
   }
 
+  async createFailureLogEntry(jobId, error, progress, timestamp, sequenceNumber) {
+    try {
+      // Create unique primary key for failure record
+      const cleanTimestamp = timestamp.replace(/[:.]/g, '_')
+      const paddedSequence = sequenceNumber.toString().padStart(3, '0')
+      const randomSuffix = Math.random().toString(36).substring(2, 4)
+      const failureLogId = `${jobId}_seq${paddedSequence}_${cleanTimestamp}_${randomSuffix}`
+      const ttl = Math.floor((Date.now() + (TTL_HOURS * 60 * 60 * 1000)) / 1000)
+      
+      const failureLogEntry = {
+        recordId: failureLogId,
+        jobId,
+        timestamp,
+        stepName: 'failed',
+        progress: progress || 0,
+        status: 'failed',
+        details: {
+          sequenceNumber,
+          recordType: 'failure_log',
+          ttl,
+          success: false,
+          error: {
+            message: error.message,
+            type: error.constructor.name,
+            code: error.Code || error.name,
+            stack: error.stack,
+            // Add specific S3 error details if available
+            ...(error.Code === 'NoSuchKey' && {
+              s3Error: {
+                missingKey: error.Key,
+                bucket: error.Bucket,
+                suggestion: 'Check if the input file exists in S3'
+              }
+            })
+          },
+          message: `Report generation failed: ${error.message}`,
+          failureCategory: this.categorizeError(error)
+        }
+      }
+
+      await this.dynamoDb.send(new PutCommand({
+        TableName: TABLE_NAME,
+        Item: failureLogEntry
+      }))
+
+      logger.info('Failure log entry created', { 
+        recordId: failureLogId, 
+        jobId, 
+        progress,
+        stepName: 'failed',
+        sequenceNumber,
+        errorMessage: error.message
+      })
+    } catch (logError) {
+      logger.error('Failed to create failure log entry', { jobId, sequenceNumber, error: logError.message })
+      // Don't throw error - this is just logging
+    }
+  }
+
   async getJobProgressLogs(jobId) {
     try {
       // Scan for progress logs for this job
       const result = await this.dynamoDb.send(new ScanCommand({
         TableName: TABLE_NAME,
-        FilterExpression: 'jobId = :jobId AND recordType = :recordType',
+        FilterExpression: 'jobId = :jobId AND (details.recordType = :progressType OR details.recordType = :completionType)',
         ExpressionAttributeValues: {
           ':jobId': jobId,
-          ':recordType': 'progress_log'
+          ':progressType': 'progress_log',
+          ':completionType': 'completion_log'
         }
       }))
       
       // Sort by sequence number
       const progressLogs = (result.Items || []).sort((a, b) => {
-        return (a.sequenceNumber || 0) - (b.sequenceNumber || 0)
+        return (a.details?.sequenceNumber || 0) - (b.details?.sequenceNumber || 0)
       })
       
       logger.info('Retrieved progress logs', { jobId, count: progressLogs.length })
@@ -558,7 +653,7 @@ class DynamoJobService {
       
       // Sort by sequence number (main job = 0, progress logs = 1, 2, 3...)
       const allRecords = (result.Items || []).sort((a, b) => {
-        return (a.sequenceNumber || 0) - (b.sequenceNumber || 0)
+        return (a.details?.sequenceNumber || 0) - (b.details?.sequenceNumber || 0)
       })
       
       logger.info('Retrieved all job records', { jobId, count: allRecords.length })

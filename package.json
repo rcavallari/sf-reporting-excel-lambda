@@ -14,7 +14,8 @@
     "package": "serverless package",
     "logs": "serverless logs -f generateReport -t",
     "invoke:local": "serverless invoke local -f generateReport -p test/sample-event.json",
-    "invoke:remote": "serverless invoke -f generateReport -p test/sample-event.json"
+    "invoke:remote": "serverless invoke -f generateReport -p test/sample-event.json",
+    "clean-dynamo": "node scripts/clean-dynamo-table.js"
   },
   "keywords": [
     "excel",
