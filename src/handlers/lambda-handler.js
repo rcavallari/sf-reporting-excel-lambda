@@ -234,32 +234,32 @@ exports.jobStatus = async (event, context) => {
       success: true,
       data: {
         jobId: job.jobId,
-        idProject: job.idProject,
+        idProject: job.details?.idProject,
         status: job.status,
         progress: job.progress,
-        createdAt: job.createdAt,
-        updatedAt: job.updatedAt,
-        completedAt: job.completedAt,
-        metadata: job.metadata,
-        result: job.result, // 🔥 Contains downloadUrl (presigned URL) and all statistics
-        error: job.error,
+        createdAt: job.details?.createdAt,
+        updatedAt: job.details?.updatedAt,
+        completedAt: job.details?.completedAt,
+        metadata: job.details?.metadata,
+        result: job.details?.result, // 🔥 Contains downloadUrl (presigned URL) and all statistics
+        error: job.details?.error,
         
         // Additional useful information
         progressHistory: progressLogs.map(log => ({
-          sequenceNumber: log.sequenceNumber,
+          sequenceNumber: log.details?.sequenceNumber,
           progress: log.progress,
           stepName: log.stepName,
           timestamp: log.timestamp,
-          ...(log.imagesProcessed && { imagesProcessed: log.imagesProcessed }),
-          ...(log.totalImages && { totalImages: log.totalImages })
+          ...(log.details?.imagesProcessed && { imagesProcessed: log.details.imagesProcessed }),
+          ...(log.details?.totalImages && { totalImages: log.details.totalImages })
         })),
         
         // Quick access to key information
-        ...(job.result && {
-          downloadUrl: job.result.downloadUrl, // 🔥 Direct access to presigned URL
-          processingTime: job.result.processingTimeFormatted,
-          imageStats: job.result.imageStats,
-          summary: job.result.summary
+        ...(job.details?.result && {
+          downloadUrl: job.details.result.downloadUrl, // 🔥 Direct access to presigned URL
+          processingTime: job.details.result.processingTimeFormatted,
+          imageStats: job.details.result.imageStats,
+          summary: job.details.result.summary
         })
       }
     })

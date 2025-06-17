@@ -266,6 +266,10 @@ class DynamoJobService {
           expressionAttributeNames['#ts'] = 'timestamp'
         } else if (key === 'stepName') {
           updateExpression.push(`stepName = ${attributeKey}`)
+        } else if (key === 'result') {
+          // Handle 'result' as reserved keyword
+          updateExpression.push(`details.#result = ${attributeKey}`)
+          expressionAttributeNames['#result'] = 'result'
         } else {
           // Everything else goes into details
           updateExpression.push(`details.${key} = ${attributeKey}`)
