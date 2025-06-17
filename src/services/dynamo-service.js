@@ -144,7 +144,10 @@ class DynamoJobService {
 
         await this.dynamoDb.send(new UpdateCommand({
           TableName: TABLE_NAME,
-          Key: { recordId: job.recordId },
+          Key: { 
+            jobId: jobId,
+            recordId: job.recordId 
+          },
           UpdateExpression: updateExpression.join(', '),
           ExpressionAttributeNames: expressionAttributeNames,
           ExpressionAttributeValues: expressionAttributeValues
